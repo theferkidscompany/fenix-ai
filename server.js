@@ -61,7 +61,7 @@ app.post('/api/chat', async (req, res) => {
             console.log("Ruta elegida: GEMINI");
             
             const model = genAI.getGenerativeModel({ 
-                model: "gemini-1.5-flash-latest",
+                model: "gemini-2.5-flash"
                 generationConfig: {
                     maxOutputTokens: 250, // LÍMITE DE TOKENS para ahorrar
                     temperature: 0.7

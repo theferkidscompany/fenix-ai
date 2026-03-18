@@ -63,7 +63,7 @@ app.post('/api/chat', async (req, res) => {
             const model = genAI.getGenerativeModel({ 
                 model: "gemini-2.5-flash",
                 generationConfig: {
-                    maxOutputTokens: 250, // LÍMITE DE TOKENS para ahorrar
+                    maxOutputTokens: 800, // LÍMITE DE TOKENS para ahorrar
                     temperature: 0.7
                 }
             });

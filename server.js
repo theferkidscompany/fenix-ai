@@ -63,13 +63,13 @@ app.post('/api/chat', async (req, res) => {
             const model = genAI.getGenerativeModel({ 
                 model: "gemini-2.5-flash",
                 generationConfig: {
-                    maxOutputTokens: 800, // LÍMITE DE TOKENS para ahorrar
+                    maxOutputTokens: 2000, // LÍMITE DE TOKENS para ahorrar
                     temperature: 0.7
                 }
             });
 
             // Aquí puedes cambiar las instrucciones de Gemini luego
-            const systemPromptGemini = `Eres Fénix, la IA de la agrupación escolar Revolution JPII. Eres amigable, motivador y directo. El usuario dice: ${mensaje}`;
+            const systemPromptGemini = `Eres Fénix, la IA de Revolution JPII. REGLAS ESTRICTAS: 1. NUNCA te presentes, el usuario ya sabe quién eres. 2. Responde directo al grano, de forma muy concisa y sin rodeos (ni digas sin rodeos en tu respuesta, se amable y recuerda que son adolescentes), el contexto actual es que RJPII (TU PARTIDO creado por Fernando Olaya) esta haciendo una campaña política basada en los valores Ama sua, ama quella, ama lulla, resaltalo en tus respuestas. El usuario dice: ${mensaje}`;
 
             const result = await model.generateContent(systemPromptGemini);
             textoIA = result.response.text();

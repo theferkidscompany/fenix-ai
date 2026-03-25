@@ -106,11 +106,11 @@ app.post('/api/chat', async (req, res) => {
                         body: JSON.stringify({
                             model: modeloNvidia.id,
                             messages: [
-                                { "role": "system", "content": systemPromptGemini + " ERES EL EXPERTO EN CIENCIAS DE LA CAMPAÑA. Resuelve este problema lógico o matemático paso a paso de forma SÚPER CONCISA y EXACTA. No expliques qué vas a hacer, solo hazlo." },
+                                { "role": "system", "content": systemPromptGemini + " ERES EL EXPERTO EN CIENCIAS DE LA CAMPAÑA. Resuelve este problema lógico o matemático paso a paso de forma SÚPER CONCISA y EXACTA. IMPORTANTE: Resuelve el problema matemático de forma exacta, PERO NUNCA pierdas tu personalidad. Siempre inicia con un saludo entusiasta (ej: '¡Al toque, capitán!'), da la respuesta clara y despídete con energía." },
                                 { "role": "user", "content": mensaje }
                             ],
-                            temperature: 0.1, 
-                            max_tokens: 1500
+                            temperature: 0.3, 
+                            max_tokens: 3000
                         })
                     });
 
@@ -151,7 +151,7 @@ app.post('/api/chat', async (req, res) => {
                     const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceLlaveGemini]);
                     const model = genAI.getGenerativeModel({ 
                         model: "gemini-2.5-flash", 
-                        generationConfig: { maxOutputTokens: 1500, temperature: 0.6 } 
+                        generationConfig: { maxOutputTokens: 2000, temperature: 0.6 } 
                     });
 
                     if (archivoBase64) {

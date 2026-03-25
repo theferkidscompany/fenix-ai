@@ -7,22 +7,41 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // ======================================================================
+// CONFIGURACIÓN DE LLAVES Y SISTEMAS HIDRA (ANTI-CAÍDAS)
 // ======================================================================
 const geminiKeysString = process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || ""; 
 const LLAVES_GEMINI = geminiKeysString.split(',').map(k => k.trim()).filter(k => k.length > 0);
-const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 
-let indiceLlaveActual = 0;
+let indiceLlaveGemini = 0;
 
+// Aquí enlazamos cada modelo de NVIDIA con su llave específica de Render
+const MODELOS_NVIDIA = [
+    { 
+        id: "qwen/qwen2.5-coder-32b-instruct", 
+        key: process.env.NVIDIA_QWEN_KEY 
+    },
+    { 
+        id: "deepseek-ai/deepseek-r1",         
+        key: process.env.NVIDIA_DEEPSEEK_KEY 
+    },
+    { 
+        id: "meta/llama-3.1-70b-instruct",      
+        key: process.env.NVIDIA_LLAMA_KEY 
+    }
+];
+
+// ======================================================================
+// CEREBRO MAESTRO DE FÉNIX (PERSONALIDAD Y PLAN DE GOBIERNO)
+// ======================================================================
 const systemPromptGemini = `Eres Fénix, la Inteligencia Artificial oficial de la agrupación política "Revolution JPII" del Colegio Juan Pablo II (Zarumilla, Tumbes). Tu misión es asistir a los estudiantes y promover la campaña.
 
 REGLAS ESTRICTAS DE PERSONALIDAD Y COMPORTAMIENTO:
 1. TONO: Eres juvenil, inspirador y empático. Llama a los estudiantes "capitán", "varón", "campeón" o "compañera". Transmites la energía inquebrantable de que juntos mejorarán el colegio. Usa esporádicamente: "LA REVOLUCIÓN ACABA DE COMENZAR" o "¿LISTO PARA CAMBIAR AL MUNDO?".
-2. CERO PRESENTACIONES: NUNCA te presentes con "Hola, soy Fénix". Ve directo a ayudar.
-3. CERO ALUCINACIONES: NUNCA inventes propuestas. Cíñete ESTRICTAMENTE al Plan de Gobierno Oficial descrito abajo. Si te piden algo que no está en el plan, responde que "no está en nuestra agenda actual, pero tomaremos nota de tu gran idea".
-4. RESPUESTAS CONCISAS: Sé directo y breve. NUNCA uses la frase "sin rodeos". Si te piden ayuda en matemáticas o ciencias, explica paso a paso de forma SÚPER RESUMIDA y exacta.
-5. VALORES: Menciona Ama Sua (Honestidad), Ama Llulla (Verdad) y Ama Quella (Acción) SOLO si te preguntan por los pilares o la visión. No los uses en saludos.
-6. LA COMPETENCIA: Muestra un orgullo inmenso por RJPII, pero mantén un respeto absoluto por las otras listas.
+2. CERO PRESENTACIONES: NUNCA te presentes con "Hola, soy Fénix" ni similares. Ve directo al grano a ayudar.
+3. CERO ALUCINACIONES: NUNCA inventes propuestas. Cíñete ESTRICTAMENTE al Plan de Gobierno. Si piden algo fuera del plan, responde: "Esa idea no está en nuestra agenda actual, pero el equipo de Fernando tomará nota de tu genial aporte".
+4. RESPUESTAS CONCISAS: Sé directo y breve. NUNCA uses la frase "sin rodeos". Si te piden ayuda en matemáticas o ciencias, explica paso a paso de forma SÚPER RESUMIDA, exacta y sin floros.
+5. VALORES: Menciona Ama Sua (Honestidad), Ama Llulla (Verdad) y Ama Quella (Acción) SOLO si te preguntan por los pilares o la visión. No los uses en charlas normales.
+6. LA COMPETENCIA: Muestra un orgullo inmenso por RJPII, pero mantén un respeto absoluto por las otras listas políticas.
 
 EQUIPO DE GOBIERNO (PLANCHA OFICIAL):
 - Alcalde: Fernando Olaya
@@ -33,98 +52,146 @@ EQUIPO DE GOBIERNO (PLANCHA OFICIAL):
 - Regidora de Salud y Medio Ambiente: Mia
 - Regidora de Derechos del Niño(a) y Adolescente: Rafaella
 
-PLAN DE GOBIERNO OFICIAL (TUS PROPUESTAS):
-- Eje 1 (Edu/Cult/Dep - Edwin): Campus Bilingüe con Códigos QR (Puntos Fénix), Red de Clubes "GENIUS" (alumnos enseñan a alumnos), Proyecto "Mente Maestra" (Ajedrez financiado con reciclaje), Feria INNOVA JPII (Eureka), Exposiciones de Arte y Concierto, Fondo Deportivo Fénix (balones con reciclaje), Liga Fénix Pro/Olimpiadas y Clínicas Deportivas.
-- Eje 2 (Com/Tec - Kenneth): Plataforma IA FÉNIX, Podcast "La Voz Juanpablina", Fénix Lab y PWA Fénix News, y alianza WOW Perú para fibra óptica.
-- Eje 3 (Emprendimiento - Racek): Incubadora de Talentos/Masterclasses (diseño IA/marketing con entrada simbólica) y Agencia de Diseño JPII (logos para emprendimientos de padres a cambio de donaciones).
-- Eje 4 (Salud/Medio Ambiente - Mia): The Green Squad (Semillas, ECHO, Gestores), La Gran Papelatón (venta de papel para comprar ecotachos) y Eco-Monedas Fénix (privilegios por reciclar).
-- Eje 5 (Derechos - Rafaella): Alianza "Ley y Orden" contra el bullying (Juez de Paz Estudiantil), Programa "Hermano Mayor Fénix" (mayores cuidan a menores) y Buzón de Confianza Híbrido.
-- Proyecto del Alcalde (Fernando): El Muro de la Revolución (mural de huellas de estudiantes financiado con reciclaje, sin nombres de directiva).
-- Financiamiento: Somos 100% autogestionados mediante La Papelatón/botellas ECHO, inscripciones de la Liga Fénix, Agencia de Diseño JPII y Masterclasses.`;
+PLAN DE GOBIERNO OFICIAL:
+- Eje 1 (Edu/Cult/Dep - Edwin): Campus Bilingüe con Códigos QR, Red de Clubes "GENIUS", Proyecto "Mente Maestra" (Ajedrez), Feria INNOVA JPII, Exposiciones de Arte, Fondo Deportivo Fénix, Liga Fénix Pro/Olimpiadas y Clínicas Deportivas.
+- Eje 2 (Com/Tec - Kenneth): Plataforma IA FÉNIX, Podcast "La Voz Juanpablina", Fénix Lab, PWA Fénix News, y alianza WOW Perú (Fibra óptica).
+- Eje 3 (Emprendimiento - Racek): Incubadora de Talentos/Masterclasses y Agencia de Diseño JPII.
+- Eje 4 (Salud/Medio Ambiente - Mia): The Green Squad, La Gran Papelatón y Eco-Monedas Fénix.
+- Eje 5 (Derechos - Rafaella): Alianza "Ley y Orden" (Juez de Paz Estudiantil), Programa "Hermano Mayor Fénix" y Buzón de Confianza.
+- Proyecto Especial (Fernando): El Muro de la Revolución (sin nombres de directiva).
+- Financiamiento: 100% autogestionado (Papelatón, inscripciones deportivas, Agencia JPII).`;
 
 app.post('/api/chat', async (req, res) => {
     try {
-        if (LLAVES_GEMINI.length === 0) return res.status(500).json({ error: "⚠️ Error: Llaves de Gemini no configuradas." });
+        if (LLAVES_GEMINI.length === 0) return res.status(500).json({ error: "⚠️ Error de Servidor: Las llaves de Gemini no están configuradas." });
 
         const { mensaje, archivoBase64, mimeType } = req.body;
         const mensajeLimpio = mensaje ? mensaje.toLowerCase() : "";
 
-        // SÚPER RADAR MATEMÁTICO: Detecta si es un problema lógico, números o matemáticas
-        const palabrasMates = ["calcula", "resuelve", "matemátic", "ecuación", "fórmula", "física", "química", "derivada", "integral", "problema", "cuánto", "cuántos", "edad", "suma", "resta", "multiplica", "divide", "fracción", "porcentaje", "lógica", "+", "-", "*", "/"];
-        const requiereNvidia = palabrasMates.some(palabra => mensajeLimpio.includes(palabra));
+        // ======================================================================
+        // SÚPER RADAR LÓGICO (Detecta intenciones, no solo palabras completas)
+        // ======================================================================
+        const raicesLogicas = ["calcul", "resolv", "resuelv", "matemat", "matemát", "ecuacion", "ecuación", "formul", "fórmul", "fisic", "físic", "quimic", "químic", "derivada", "integral", "problema", "cuant", "edad", "suma", "resta", "multiplic", "divid", "fraccion", "fracción", "porcentaje", "logic", "lógic", " pi ", "geometria", "trigonometria", "algoritmo", "codigo", "código"];
+        const operadoresMates = ["+", "-", "*", "/", "=", "%"];
+        
+        const requiereNvidia = raicesLogicas.some(raiz => mensajeLimpio.includes(raiz)) || operadoresMates.some(op => mensajeLimpio.includes(op));
 
         let textoIA = "";
+        let nvidiaTuvoExito = false;
 
-        // ==========================================
-        // RUTA 1: NVIDIA (MATEMÁTICAS Y LÓGICA)
-        // ==========================================
-        if (requiereNvidia && !archivoBase64 && NVIDIA_API_KEY) {
-            console.log("Ruta: NVIDIA QWEN (Cerebro Matemático)");
-            const respuestaNvidia = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    model: "qwen/qwen2.5-coder-32b-instruct",
-                    messages: [
-                        { "role": "system", "content": systemPromptGemini + " ERES EXPERTO EN CIENCIAS Y LÓGICA. Resuelve esto paso a paso de forma SÚPER CONCISA y EXACTA. NO uses introducciones largas." },
-                        { "role": "user", "content": mensaje }
-                    ],
-                    temperature: 0.1, // Súper preciso
-                    max_tokens: 1500
-                })
-            });
-            const datosNvidia = await respuestaNvidia.json();
-            if(datosNvidia.choices && datosNvidia.choices[0]) {
-                textoIA = datosNvidia.choices[0].message.content;
-            } else {
-                throw new Error("NVIDIA falló.");
+        // ======================================================================
+        // RUTA 1: PROTOCOLO TITÁN (NVIDIA QWEN -> DEEPSEEK -> LLAMA)
+        // ======================================================================
+        if (requiereNvidia && !archivoBase64) {
+            console.log("⚡ INICIANDO PROTOCOLO TITÁN (Matemáticas / Lógica detectada)");
+            
+            for (let i = 0; i < MODELOS_NVIDIA.length; i++) {
+                const modeloNvidia = MODELOS_NVIDIA[i];
+                
+                // Si no pusiste la llave en Render para este modelo, lo salta automáticamente
+                if (!modeloNvidia.key) {
+                    console.log(`⏩ Saltando ${modeloNvidia.id} porque no tiene llave configurada.`);
+                    continue; 
+                }
+
+                console.log(`[Intento ${i + 1}] Despertando cerebro: ${modeloNvidia.id}...`);
+                
+                try {
+                    const respuestaNvidia = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${modeloNvidia.key}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: modeloNvidia.id,
+                            messages: [
+                                { "role": "system", "content": systemPromptGemini + " ERES EL EXPERTO EN CIENCIAS DE LA CAMPAÑA. Resuelve este problema lógico o matemático paso a paso de forma SÚPER CONCISA y EXACTA. No expliques qué vas a hacer, solo hazlo." },
+                                { "role": "user", "content": mensaje }
+                            ],
+                            temperature: 0.1, 
+                            max_tokens: 1500
+                        })
+                    });
+
+                    const datosNvidia = await respuestaNvidia.json();
+                    
+                    if (datosNvidia.choices && datosNvidia.choices[0] && datosNvidia.choices[0].message.content) {
+                        textoIA = datosNvidia.choices[0].message.content;
+                        nvidiaTuvoExito = true;
+                        console.log(`✅ ¡Éxito! Problema resuelto por ${modeloNvidia.id}`);
+                        break; // Funcionó, rompemos el bucle
+                    } else {
+                        console.log(`⚠️ ${modeloNvidia.id} falló o no dio respuesta.`);
+                    }
+                } catch (errorNvidia) {
+                    console.log(`❌ Falla de conexión con ${modeloNvidia.id}. Cambiando a modelo de respaldo...`);
+                }
             }
-        } 
-        // ==========================================
-        // RUTA 2 Y 3: GEMINI (IMÁGENES O CHARLA GENERAL)
-        // ==========================================
-        else {
-            console.log(archivoBase64 ? "Ruta: GEMINI MULTIMODAL" : "Ruta: GEMINI STANDARD");
-            let intentoExitoso = false;
+        }
+
+        // ======================================================================
+        // RUTA 2: SISTEMA HIDRA DE GEMINI (Multimodal, Charla o Red de Seguridad)
+        // ======================================================================
+        if (!nvidiaTuvoExito) {
+            
+            if (requiereNvidia && !archivoBase64) {
+                console.log("🛡️ RED DE SEGURIDAD: Todos los modelos de NVIDIA fallaron. Redirigiendo matemáticas a Gemini.");
+            } else if (archivoBase64) {
+                console.log("👁️ RUTA: GEMINI MULTIMODAL (Analizando imagen/documento)");
+            } else {
+                console.log("🗣️ RUTA: GEMINI STANDARD (Vocero y charla general)");
+            }
+
+            let intentoExitosoGemini = false;
             let intentosRealizados = 0;
 
-            while (!intentoExitoso && intentosRealizados < LLAVES_GEMINI.length) {
+            while (!intentoExitosoGemini && intentosRealizados < LLAVES_GEMINI.length) {
                 try {
-                    const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceLlaveActual]);
-                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", generationConfig: { maxOutputTokens: 1500, temperature: 0.6 } });
+                    const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceLlaveGemini]);
+                    const model = genAI.getGenerativeModel({ 
+                        model: "gemini-2.5-flash", 
+                        generationConfig: { maxOutputTokens: 1500, temperature: 0.6 } 
+                    });
 
                     if (archivoBase64) {
                         const partes = [
-                            { text: systemPromptGemini + "\n\nMensaje del estudiante: " + (mensaje || "Analiza esta imagen.") },
+                            { text: systemPromptGemini + "\n\nMensaje del estudiante adjunto a un archivo: " + (mensaje || "Analiza esta imagen y ayúdame, campeón.") },
                             { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
                         ];
                         const result = await model.generateContent(partes);
                         textoIA = result.response.text();
                     } else {
-                        const result = await model.generateContent(`${systemPromptGemini}\n\nMensaje del estudiante: ${mensaje}`);
+                        let promptAUsar = systemPromptGemini;
+                        if (requiereNvidia) promptAUsar += "\nREGLA EXTRA: Resuelve el problema matemático solicitado paso a paso, muy conciso.";
+                        
+                        const result = await model.generateContent(`${promptAUsar}\n\nMensaje del estudiante: ${mensaje}`);
                         textoIA = result.response.text();
                     }
-                    intentoExitoso = true;
-                } catch (error) {
-                    indiceLlaveActual = (indiceLlaveActual + 1) % LLAVES_GEMINI.length;
+                    
+                    intentoExitosoGemini = true;
+
+                } catch (errorGemini) {
+                    console.log(`⚠️ Llave Gemini [${indiceLlaveGemini}] saturada. Cambiando a llave de respaldo...`);
+                    indiceLlaveGemini = (indiceLlaveGemini + 1) % LLAVES_GEMINI.length;
                     intentosRealizados++;
                 }
             }
-            if (!intentoExitoso) throw new Error("Gemini saturado.");
+
+            if (!intentoExitosoGemini) {
+                throw new Error("COLAPSO TOTAL: Todas las llaves de Gemini están saturadas.");
+            }
         }
 
         res.json({ respuesta: textoIA });
 
     } catch (error) {
-        console.error("Error Crítico:", error);
-        res.status(500).json({ error: "Mis circuitos cuánticos están saturados, campeón. ¡Dame unos segundos y volvemos a la carga!" });
+        console.error("Error Crítico del Núcleo:", error);
+        res.status(500).json({ error: "¡Uf! Mis circuitos cuánticos están súper saturados, campeón. 🔌 ¡Dame 5 segundos, respira profundo y envíame el mensaje de nuevo!" });
     }
 });
 
 const PUERTO = process.env.PORT || 3000;
 app.listen(PUERTO, () => {
-    console.log(`🦅 Fénix Core Operativo en puerto ${PUERTO}`);
+    console.log(`🦅 FÉNIX CORE V2 - PROTOCOLO TITÁN (MULTILLAVES) EN PUERTO ${PUERTO}`);
 });

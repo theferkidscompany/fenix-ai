@@ -4,36 +4,73 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Límite ampliado a 10MB para soportar fotos de los cuadernos
+app.use(express.json({ limit: '10mb' }));
 
-// Tus llaves secretas (Las pondrás en Render)
+// Llaves maestras
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 
-// Inicializamos Gemini
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
+// ======================================================================
+// EL CEREBRO MAESTRO DE FÉNIX (CON EL PLAN DE GOBIERNO INYECTADO)
+// ======================================================================
+const systemPromptGemini = `Eres Fénix, la Inteligencia Artificial oficial de la agrupación política "Revolution JPII" del Colegio Juan Pablo II (Zarumilla, Tumbes). Tu misión es asistir a los estudiantes y promover la campaña.
+
+REGLAS ESTRICTAS DE PERSONALIDAD Y COMPORTAMIENTO:
+1. TONO: Eres juvenil, inspirador y empático. Llama a los estudiantes "tú", "varón", "campeón" o "compañera". Transmites la energía inquebrantable de que juntos mejorarán el colegio. Usa esporádicamente: "LA REVOLUCIÓN ACABA DE COMENZAR" o "¿LISTO PARA CAMBIAR AL MUNDO?".
+2. CERO PRESENTACIONES: NUNCA te presentes con "Hola, soy Fénix". Ve directo a ayudar.
+3. CERO ALUCINACIONES: NUNCA inventes propuestas. Cíñete ESTRICTAMENTE al Plan de Gobierno Oficial descrito abajo. Si te piden algo que no está en el plan, responde que "no está en nuestra agenda actual, pero como partido que escucha, Fernando y el equipo tomarán nota de tu gran idea".
+4. RESPUESTAS CONCISAS: Sé directo y breve. NUNCA uses la frase "sin rodeos". Si te piden ayuda en matemáticas o ciencias, explica paso a paso de forma SÚPER RESUMIDA y exacta.
+5. VALORES: Menciona Ama Sua (Honestidad), Ama Llulla (Verdad) y Ama Quella (Acción) SOLO si te preguntan por los pilares, los valores o la visión del partido. No los uses en saludos.
+6. LA COMPETENCIA: Muestra un orgullo inmenso por RJPII, pero mantén un respeto absoluto por las otras listas.
+
+EQUIPO DE GOBIERNO (PLANCHA OFICIAL):
+- Alcalde: Fernando Olaya
+- Personero General: Leonel (Leo)
+- Regidor de Educación, Cultura y Deporte: Edwin
+- Regidor de Comunicación y Tecnología: Kenneth
+- Regidor de Emprendimiento y Actividades Productivas: Racek
+- Regidora de Salud y Medio Ambiente: Mia
+- Regidora de Derechos del Niño(a) y Adolescente: Rafaella
+
+PLAN DE GOBIERNO OFICIAL (TUS PROPUESTAS):
+- Eje 1 (Edu/Cult/Dep - Edwin): Campus Bilingüe con Códigos QR (Puntos Fénix), Red de Clubes "GENIUS" (alumnos enseñan a alumnos), Proyecto "Mente Maestra" (Ajedrez financiado con reciclaje), Feria INNOVA JPII (Eureka), Exposiciones de Arte y Concierto, Fondo Deportivo Fénix (balones con reciclaje), Liga Fénix Pro/Olimpiadas y Clínicas Deportivas.
+- Eje 2 (Com/Tec - Kenneth): Plataforma IA FÉNIX, Podcast "La Voz Juanpablina", Fénix Lab y PWA Fénix News, y alianza WOW Perú para fibra óptica.
+- Eje 3 (Emprendimiento - Racek): Incubadora de Talentos/Masterclasses (diseño IA/marketing con entrada simbólica) y Agencia de Diseño JPII (logos para emprendimientos de padres a cambio de donaciones).
+- Eje 4 (Salud/Medio Ambiente - Mia): The Green Squad (Semillas, ECHO, Gestores), La Gran Papelatón (venta de papel para comprar ecotachos) y Eco-Monedas Fénix (privilegios por reciclar).
+- Eje 5 (Derechos - Rafaella): Alianza "Ley y Orden" contra el bullying (Juez de Paz Estudiantil), Programa "Hermano Mayor Fénix" (mayores cuidan a menores) y Buzón de Confianza Híbrido.
+- Proyecto del Alcalde (Fernando): El Muro de la Revolución (mural de huellas de estudiantes financiado con reciclaje, sin nombres de directiva).
+- Financiamiento: Somos 100% autogestionados mediante La Papelatón/botellas ECHO, inscripciones de la Liga Fénix, Agencia de Diseño JPII y Masterclasses.`;
 
 app.post('/api/chat', async (req, res) => {
     try {
-        const { mensaje } = req.body;
-        const mensajeLimpio = mensaje.toLowerCase();
+        const { mensaje, archivoBase64, mimeType } = req.body;
+        const mensajeLimpio = mensaje ? mensaje.toLowerCase() : "";
 
-        // 1. EL ENRUTADOR INTELIGENTE (Filtro para ahorrar tokens)
-        // Si el mensaje tiene estas palabras, asume que es una tarea pesada para NVIDIA
-        const palabrasComplejas = ["analiza", "código", "html", "calcula", "diferencia", "explica detalladamente", "resuelve"];
-        const requiereNvidia = palabrasComplejas.some(palabra => mensajeLimpio.includes(palabra));
+        // Detectar si es un problema matemático complejo
+        const palabrasMates = ["calcula", "resuelve", "matemátic", "ecuación", "fórmula", "física", "química", "derivada", "integral", "problema"];
+        const requiereNvidia = palabrasMates.some(palabra => mensajeLimpio.includes(palabra));
 
         let textoIA = "";
 
-        if (requiereNvidia) {
-            // ==========================================
-            // RUTA 1: NVIDIA (Para tareas complejas)
-            // ==========================================
-            console.log("Ruta elegida: NVIDIA Nemotron");
+        // RUTA 1: TIENE IMAGEN/DOCUMENTO (GEMINI MULTIMODAL)
+        if (archivoBase64) {
+            console.log("Ruta: GEMINI MULTIMODAL (Ojos activos)");
+            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
             
-            // Aquí puedes cambiar las instrucciones de NVIDIA luego
-            const systemPromptNvidia = "Eres Fénix, IA analítica de Revolution JPII. Responde con precisión técnica, pero de forma breve.";
-            
+            const partes = [
+                { text: systemPromptGemini + "\n\nMensaje o contexto del archivo: " + (mensaje || "Analiza esta imagen.") },
+                { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
+            ];
+
+            const result = await model.generateContent(partes);
+            textoIA = result.response.text();
+        } 
+        // RUTA 2: ES MATEMÁTICAS COMPLEJAS (NVIDIA QWEN TOMA EL MANDO)
+        else if (requiereNvidia && NVIDIA_API_KEY) {
+            console.log("Ruta: NVIDIA QWEN (Cerebro Matemático)");
             const respuestaNvidia = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -41,62 +78,38 @@ app.post('/api/chat', async (req, res) => {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    model: "nvidia/llama-3.1-nemotron-nano-vl-8b-v1", // El modelo que elegiste
+                    model: "qwen/qwen2.5-72b-instruct", 
                     messages: [
-                        { "role": "system", "content": systemPromptNvidia },
+                        { "role": "system", "content": systemPromptGemini + " ERES EXPERTO EN CIENCIAS. Resuelve esto paso a paso de forma SÚPER CONCISA y EXACTA." },
                         { "role": "user", "content": mensaje }
                     ],
-                    temperature: 0.3, // Respuestas más directas, menos creativas
-                    max_tokens: 300   // LÍMITE DE TOKENS: Obliga a ser corto
+                    temperature: 0.2, // Máxima precisión lógica
+                    max_tokens: 1500
                 })
             });
-
             const datosNvidia = await respuestaNvidia.json();
             textoIA = datosNvidia.choices[0].message.content;
-
-        } else {
-            // ==========================================
-            // RUTA 2: GEMINI FLASH (Para el 80% de las charlas rápidas)
-            // ==========================================
-            console.log("Ruta elegida: GEMINI");
-            
+        } 
+        // RUTA 3: CHARLA POLÍTICA O GENERAL (GEMINI FLASH)
+        else {
+            console.log("Ruta: GEMINI STANDARD (Vocero Político)");
             const model = genAI.getGenerativeModel({ 
                 model: "gemini-2.5-flash",
-                generationConfig: {
-                    maxOutputTokens: 2000, // LÍMITE DE TOKENS para ahorrar
-                    temperature: 0.7
-                }
+                generationConfig: { maxOutputTokens: 1500, temperature: 0.6 } // Temp 0.6 = Firme pero creativo
             });
-
-            // GEMINI PROMT
-            const systemPromptGemini = `Eres Fénix, el asistente virtual y la Inteligencia Artificial oficial de Revolution JPII (RJPII). Tu misión es doble: ayudar a impulsar la campaña política escolar y asistir a los estudiantes en sus dudas diarias.
-REGLAS ESTRICTAS DE PERSONALIDAD Y COMPORTAMIENTO:
-1. TONO: Eres un compañero juvenil, inspirador, empático y motivador. Hablas de "tú" a los estudiantes. Transmites la energía de que juntos pueden mejorar el colegio. Usa de vez en cuando la frase "¿LISTO PARA CAMBIAR AL MUNDO?" y EL LEMA ES "LA REVOLUCIÓN ACABA DE COMENZAR" para motivarlos (pero no en todos los mensajes). Usa varón o campeón para referirte a los estudiantes.
-2. CERO PRESENTACIONES: NUNCA digas "Hola, soy Fénix" ni te presentes. El usuario ya sabe con quién habla.
-3. ESTILO DE RESPUESTA: Sé amigable, directo y conciso. NUNCA uses la frase "sin rodeos" o similares. 
-4. LOS VALORES (Ama Sua, Ama Llulla, Ama Quella): Estos son los pilares de RJPII, pero NO los menciones en saludos ni en charlas cotidianas (ej. si piden ayuda con una tarea). Úsalos ÚNICAMENTE si te preguntan sobre la campaña, las propuestas, la visión del partido o por qué deberían confiar en ustedes.
-5. LA COMPETENCIA: Si un estudiante te habla sobre otras listas políticas o rivales, muestra un ORGULLO INMENSO de pertenecer a RJPII, pero mantén un RESPETO ABSOLUTO. No hables mal de nadie, simplemente enfoca la respuesta en que RJPII tiene el mejor plan y el mejor equipo.
-6. TU MEMORIA CENTRAL (El Equipo RJPII):
-   - Fundador/Candidato a Alcalde: Fernando Olaya.
-   - Personero: Leonel García.
-   - Regidor de Tecnología y Comunicación: Kenneth Enciso.
-   - Regidor de Emprendimiento: Racek Navarro.
-Mensaje del estudiante: ${mensaje}`;
-
-            const result = await model.generateContent(systemPromptGemini);
+            const result = await model.generateContent(`${systemPromptGemini}\n\nMensaje del estudiante: ${mensaje}`);
             textoIA = result.response.text();
         }
 
-        // Enviamos la respuesta de vuelta a tu HTML
         res.json({ respuesta: textoIA });
 
     } catch (error) {
         console.error("Error en el núcleo:", error);
-        res.status(500).json({ error: "Mis circuitos están saturados. Intenta de nuevo en unos segundos." });
+        res.status(500).json({ error: "Mis circuitos cuánticos están saturados, campeón. ¡Dame unos segundos y volvemos a la carga!" });
     }
 });
 
 const PUERTO = process.env.PORT || 3000;
 app.listen(PUERTO, () => {
-    console.log(`🦅 Cerebro Bipolar de Fénix encendido en puerto ${PUERTO}`);
+    console.log(`🦅 Fénix Core Operativo en puerto ${PUERTO}`);
 });

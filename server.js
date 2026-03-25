@@ -78,7 +78,7 @@ app.post('/api/chat', async (req, res) => {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    model: "qwen/qwen2.5-72b-instruct", 
+                    model: "qwen/qwen2.5-coder-32b-instruct",
                     messages: [
                         { "role": "system", "content": systemPromptGemini + " ERES EXPERTO EN CIENCIAS. Resuelve esto paso a paso de forma SÚPER CONCISA y EXACTA." },
                         { "role": "user", "content": mensaje }

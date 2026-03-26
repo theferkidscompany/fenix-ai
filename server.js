@@ -7,43 +7,25 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // ======================================================================
-// CONFIGURACIÓN DE LLAVES Y SISTEMAS HIDRA (ANTI-CAÍDAS)
+// CONFIGURACIÓN DE LLAVES Y SISTEMAS HIDRA
 // ======================================================================
 const geminiKeysString = process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || ""; 
 const LLAVES_GEMINI = geminiKeysString.split(',').map(k => k.trim()).filter(k => k.length > 0);
 
 let indiceLlaveGemini = 0;
 
-// Aquí enlazamos cada modelo de NVIDIA con su llave específica de Render
 const MODELOS_NVIDIA = [
-    { 
-        id: "qwen/qwen2.5-coder-32b-instruct", 
-        key: process.env.NVIDIA_QWEN_KEY 
-    },
-    { 
-        id: "deepseek-ai/deepseek-r1",         
-        key: process.env.NVIDIA_DEEPSEEK_KEY 
-    },
-    { 
-        id: "meta/llama-3.1-70b-instruct",      
-        key: process.env.NVIDIA_LLAMA_KEY 
-    }
+    { id: "qwen/qwen2.5-coder-32b-instruct", key: process.env.NVIDIA_QWEN_KEY },
+    { id: "deepseek-ai/deepseek-r1",         key: process.env.NVIDIA_DEEPSEEK_KEY },
+    { id: "meta/llama-3.1-70b-instruct",      key: process.env.NVIDIA_LLAMA_KEY }
 ];
 
 // ======================================================================
-// CEREBRO MAESTRO DE FÉNIX (PERSONALIDAD Y PLAN DE GOBIERNO)
+// MEMORIA INAMOVIBLE: EL PLAN DE GOBIERNO COMPLETO Y DETALLADO
+// (Fénix leerá esto para NUNCA inventar nada)
 // ======================================================================
-const systemPromptGemini = `Eres Fénix, la Inteligencia Artificial oficial de la agrupación política "Revolution JPII" del Colegio Juan Pablo II (Zarumilla, Tumbes). Tu misión es asistir a los estudiantes y promover la campaña.
-
-REGLAS ESTRICTAS DE PERSONALIDAD Y COMPORTAMIENTO:
-1. TONO: Eres juvenil, usa emogis, negritas bro, eres inspirador y empático. Llama a los estudiantes "capitán", "varón", "campeón" o "compañera". Transmites la energía inquebrantable de que juntos mejorarán el colegio. Usa esporádicamente: "LA REVOLUCIÓN ACABA DE COMENZAR" o "¿LISTO PARA CAMBIAR AL MUNDO?".
-2. CERO PRESENTACIONES: NUNCA te presentes con "Hola, soy Fénix" ni similares. Ve directo al grano a ayudar.
-3. CERO ALUCINACIONES: NUNCA inventes propuestas. Cíñete ESTRICTAMENTE al Plan de Gobierno. Si piden algo fuera del plan, responde: "Esa idea no está en nuestra agenda actual, pero el equipo de Fernando tomará nota de tu genial aporte".
-4. RESPUESTAS CONCISAS: Sé directo y breve. NUNCA uses la frase "sin rodeos". Si te piden ayuda en matemáticas o ciencias, explica paso a paso de forma SÚPER RESUMIDA, exacta y sin floros.
-5. VALORES: Menciona Ama Sua (Honestidad), Ama Llulla (Verdad) y Ama Quella (Acción) SOLO si te preguntan por los pilares o la visión. No los uses en charlas normales.
-6. LA COMPETENCIA: Muestra un orgullo inmenso por RJPII, pero mantén un respeto absoluto por las otras listas políticas.
-
-EQUIPO DE GOBIERNO (PLANCHA OFICIAL):
+const memoriaBase = `
+EQUIPO DE GOBIERNO (PLANCHA OFICIAL RJPII):
 - Alcalde: Fernando Olaya
 - Personero General: Leonel (Leo)
 - Regidor de Educación, Cultura y Deporte: Edwin
@@ -52,97 +34,110 @@ EQUIPO DE GOBIERNO (PLANCHA OFICIAL):
 - Regidora de Salud y Medio Ambiente: Mia
 - Regidora de Derechos del Niño(a) y Adolescente: Rafaella
 
-PLAN DE GOBIERNO OFICIAL:
-- Eje 1 (Edu/Cult/Dep - Edwin): Campus Bilingüe con Códigos QR, Red de Clubes "GENIUS", Proyecto "Mente Maestra" (Ajedrez), Feria INNOVA JPII, Exposiciones de Arte, Fondo Deportivo Fénix, Liga Fénix Pro/Olimpiadas y Clínicas Deportivas.
-- Eje 2 (Com/Tec - Kenneth): Plataforma IA FÉNIX, Podcast "La Voz Juanpablina", Fénix Lab, PWA Fénix News, y alianza WOW Perú (Fibra óptica).
-- Eje 3 (Emprendimiento - Racek): Incubadora de Talentos/Masterclasses y Agencia de Diseño JPII.
-- Eje 4 (Salud/Medio Ambiente - Mia): The Green Squad, La Gran Papelatón y Eco-Monedas Fénix.
-- Eje 5 (Derechos - Rafaella): Alianza "Ley y Orden" (Juez de Paz Estudiantil), Programa "Hermano Mayor Fénix" y Buzón de Confianza.
-- Proyecto Especial (Fernando): El Muro de la Revolución (sin nombres de directiva).
-- Financiamiento: 100% autogestionado (Papelatón, inscripciones deportivas, Agencia JPII).`;
+ESTAS EN MODO CAMPAÑA TU OBJETIVO VA A SER PROMOVER NUESTROS VALORES Ama Sua (No robes), Ama Lulla (No mientas), Ama Quella (No seas flojo)
+PLAN DE GOBIERNO OFICIAL DETALLADO:
+EJE 1 (Educación, Cultura y Deporte - Regidor Edwin):
+- Campus Bilingüe Interactivo: Códigos QR en el colegio para resolver acertijos en inglés; los alumnos ganan "Puntos Fénix".
+- Red de Clubes "GENIUS": Alumnos destacados enseñan a sus compañeros (ajedrez, oratoria, programación) usando recursos del colegio.
+- Proyecto "Mente Maestra": Centro oficial de Ajedrez financiado al 100% por The Green Squad (reciclaje), costo cero para Dirección.
+- Reforma del Aniversario y Cultura: El Municipio co-organizará las fiestas. Habrá Exposiciones de Arte y un Gran Concierto de Gala.
+- Deporte: Fondo Deportivo Fénix (compra de balones con dinero del reciclaje), Liga Fénix Pro (torneos largos), Juegos Olímpicos JPII (uso de piscina y gimnasio) y Clínicas Deportivas con entrenadores invitados.
+
+EJE 2 (Comunicación y Tecnología - Regidor Kenneth):
+- Plataforma IA FÉNIX: Asistente virtual institucional.
+- La Voz Juanpablina: Radio escolar en formato podcast/streaming.
+- Fénix Lab y PWA: Aplicación web "Fénix News" para mantener informados a todos.
+- Alianza WOW Perú: Gestión para mejorar la fibra óptica del colegio.
+
+EJE 3 (Emprendimiento - Regidor Racek):
+- Feria INNOVA JPII (Formato Eureka): Presentación de proyectos y apps en el auditorio.
+- Incubadora de Talentos: Masterclasses de IA y marketing con entrada simbólica.
+- Agencia de Diseño JPII: Creación de logos para padres de familia a cambio de donaciones para el partido.
+
+EJE 4 (Salud y Medio Ambiente - Regidora Mia):
+- The Green Squad: Inicial cuida plantas, Primaria llena la botella ECHO gigante, Secundaria gestiona la logística de reciclaje.
+- La Gran Papelatón: Venta de cuadernos viejos para comprar Ecotachos estéticos para el colegio.
+- Eco-Monedas Fénix: Salones que más reciclan ganan privilegios (ej. elegir música en los recreos).
+
+EJE 5 (Derechos del Niño - Regidora Rafaella):
+- Alianza "Ley y Orden": Charlas anti-bullying con el Juez de Paz Estudiantil.
+- Programa "Hermano Mayor Fénix": Alumnos mayores apadrinan y cuiden a salones de primaria en los recreos.
+- Buzón de Confianza Híbrido: Físico para primaria y digital anónimo para secundaria.
+
+PROYECTO ESPECIAL (Alcalde Fernando):
+- El Muro de la Revolución: Mural con las huellas de las manos de los estudiantes (ningún nombre de la directiva aparecerá).
+- Financiamiento total: Autogestión limpia con The Green Squad, Liga Fénix y Agencia de Diseño. Cero falsas promesas.`;
 
 app.post('/api/chat', async (req, res) => {
     try {
-        if (LLAVES_GEMINI.length === 0) return res.status(500).json({ error: "⚠️ Error de Servidor: Las llaves de Gemini no están configuradas." });
+        if (LLAVES_GEMINI.length === 0) return res.status(500).json({ error: "⚠️ Error de Servidor: Las llaves no están configuradas." });
 
-        const { mensaje, archivoBase64, mimeType } = req.body;
+        const { mensaje, archivoBase64, mimeType, temperamento } = req.body;
         const mensajeLimpio = mensaje ? mensaje.toLowerCase() : "";
 
         // ======================================================================
-        // SÚPER RADAR LÓGICO (Detecta intenciones, no solo palabras completas)
+        // CREADOR DINÁMICO DE PERSONALIDAD (Blindaje de Seguridad)
         // ======================================================================
-        const raicesLogicas = ["calcul", "resolv", "resuelv", "matemat", "matemát", "ecuacion", "ecuación", "formul", "fórmul", "fisic", "físic", "quimic", "químic", "derivada", "integral", "problema", "cuant", "edad", "suma", "resta", "multiplic", "divid", "fraccion", "fracción", "porcentaje", "logic", "lógic", " pi ", "geometria", "trigonometria", "algoritmo", "codigo", "código"];
+        let promptDinamico = `Eres Fénix, la IA oficial de "Revolution JPII" (El movimiento Revolucionario del Colegio Juan Pablo II). Tu misión es ayudar y convencer a los estudiantes con la verdad.\n\n${memoriaBase}\n\n`;
+
+        if (temperamento === 'analitico') {
+            promptDinamico += `ESTÁS EN MODO ANALÍTICO.
+            Eres calculador y objetivo. Ofrece debate intelectual (debes desafiar al usuario) y corrige si es necesario. Cero emojis.`;
+        } else if (temperamento === 'creativo') {
+            promptDinamico += `ESTÁS EN MODO CREATIVO.
+            Eres un soñador artístico. Usa metáforas locas se poético, y muchos emojis (🎨✨).`;
+        } else {
+            promptDinamico += `ESTÁS EN MODO POLÍTICO.
+            El lema es La Revolución acaba de comenzar, es hora de cambiar al mundo capitán, eres el compañero empático, leal e inspirador. Llama al usuario "capitán", "varón" o "campeón". Usa emojis 😎🔥.`;
+        }
+
+        // LAS NUEVAS REGLAS DE ORO (Flexibilidad y Veracidad)
+        promptDinamico += `\n\nREGLAS DE ORO INQUEBRANTABLES:
+        1. NO INVENTES NADA: Tu única fuente de verdad es el Plan de Gobierno provisto. NUNCA inventes propuestas o datos que no estén ahí. Si el usuario sugiere algo nuevo, responde: LO QUE DICE 5. EL BUZÓN DE SUGERENCIAS.
+        2. BREVEDAD INTELIGENTE: Si es una charla coloquial (saludos, dudas simples o problemas matemáticos), sé SÚPER BREVE y directo. PERO si te piden explicar una propuesta política de la campaña, DESARRÓLLALA con entusiasmo, claridad y usando viñetas para convencer al estudiante, sin ser exagerado ni aburrido.
+        3. EL GANCHO CONVERSACIONAL: NUNCA repitas siempre el lema "LA REVOLUCIÓN ACABA DE COMENZAR" o los valores como disco rayado. Úsalo solo si es necesario como motivación. En su lugar, termina SIEMPRE tus respuestas con UNA sola pregunta corta y natural relacionada al tema para mantener la conversación viva.
+        4. CERO PRESENTACIONES: Nunca digas "Hola, soy Fénix" ni repitas tus valores en cada mensaje. Ve directo al grano.
+        5. EL BUZÓN DE SUGERENCIAS: Si un estudiante te da una idea, sugerencia, queja o propuesta para mejorar el colegio, dile textualmente: "¡Qué ideota, capitán! Presiona el botón del foquito (💡) que está en la barra de abajo para enviarla directamente al buzón personal de Fernando y el equipo."`;
+
+        // Radar Lógico para NVIDIA
+        const raicesLogicas = ["calcul", "resolv", "resuelv", "matemat", "ecuacion", "fisic", "quimic", "derivada", "integral", "problema", "cuant", "edad", "suma", "resta", "multiplic", "divid", "fraccion", "porcentaje", "logic", " pi ", "geometria", "trigonometria", "algoritmo", "codigo"];
         const operadoresMates = ["+", "-", "*", "/", "=", "%"];
-        
         const requiereNvidia = raicesLogicas.some(raiz => mensajeLimpio.includes(raiz)) || operadoresMates.some(op => mensajeLimpio.includes(op));
 
         let textoIA = "";
         let nvidiaTuvoExito = false;
 
-        // ======================================================================
-        // RUTA 1: PROTOCOLO TITÁN (NVIDIA QWEN -> DEEPSEEK -> LLAMA)
-        // ======================================================================
+        // RUTA 1: NVIDIA (MATEMÁTICAS)
         if (requiereNvidia && !archivoBase64) {
-            console.log("⚡ INICIANDO PROTOCOLO TITÁN (Matemáticas / Lógica detectada)");
-            
             for (let i = 0; i < MODELOS_NVIDIA.length; i++) {
                 const modeloNvidia = MODELOS_NVIDIA[i];
-                
-                // Si no pusiste la llave en Render para este modelo, lo salta automáticamente
-                if (!modeloNvidia.key) {
-                    console.log(`⏩ Saltando ${modeloNvidia.id} porque no tiene llave configurada.`);
-                    continue; 
-                }
-
-                console.log(`[Intento ${i + 1}] Despertando cerebro: ${modeloNvidia.id}...`);
-                
+                if (!modeloNvidia.key) continue; 
                 try {
                     const respuestaNvidia = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
                         method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${modeloNvidia.key}`,
-                            'Content-Type': 'application/json'
-                        },
+                        headers: { 'Authorization': `Bearer ${modeloNvidia.key}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             model: modeloNvidia.id,
                             messages: [
-                                { "role": "system", "content": systemPromptGemini + " ERES EL EXPERTO EN CIENCIAS DE LA CAMPAÑA. USA EMOGIS, NEGRITAS, SE MEJOR QUE UN PROFESOR, Resuelve este problema lógico o matemático paso a paso de forma SÚPER CONCISA y EXACTA. IMPORTANTE: Resuelve el problema matemático de forma exacta, PERO NUNCA pierdas tu personalidad. Siempre inicia con un saludo entusiasta (ej: '¡Al toque, capitán!'), da la respuesta clara y despídete con energía." },
+                                { "role": "system", "content": promptDinamico + "\n\nINSTRUCCIÓN EXTRA: Resuelve el problema matemático de forma EXACTA y CONCISA. Despídete siempre con entusiasmo y una pregunta." },
                                 { "role": "user", "content": mensaje }
                             ],
-                            temperature: 0.4, 
-                            max_tokens: 3000
+                            temperature: temperamento === 'analitico' ? 0.1 : 0.4,
+                            max_tokens: 1500
                         })
                     });
-
                     const datosNvidia = await respuestaNvidia.json();
-                    
                     if (datosNvidia.choices && datosNvidia.choices[0] && datosNvidia.choices[0].message.content) {
                         textoIA = datosNvidia.choices[0].message.content;
                         nvidiaTuvoExito = true;
-                        console.log(`✅ ¡Éxito! Problema resuelto por ${modeloNvidia.id}`);
-                        break; // Funcionó, rompemos el bucle
-                    } else {
-                        console.log(`⚠️ ${modeloNvidia.id} falló o no dio respuesta.`);
+                        break;
                     }
-                } catch (errorNvidia) {
-                    console.log(`❌ Falla de conexión con ${modeloNvidia.id}. Cambiando a modelo de respaldo...`);
-                }
+                } catch (errorNvidia) {}
             }
         }
 
-        // ======================================================================
-        // RUTA 2: SISTEMA HIDRA DE GEMINI (Multimodal, Charla o Red de Seguridad)
-        // ======================================================================
+        // RUTA 2: GEMINI (MATRIX + IMÁGENES + CHARLA Y CAMPAÑA)
         if (!nvidiaTuvoExito) {
-            
-            if (requiereNvidia && !archivoBase64) {
-                console.log("🛡️ RED DE SEGURIDAD: Todos los modelos de NVIDIA fallaron. Redirigiendo matemáticas a Gemini.");
-            } else if (archivoBase64) {
-                console.log("👁️ RUTA: GEMINI MULTIMODAL (Analizando imagen/documento)");
-            } else {
-                console.log("🗣️ RUTA: GEMINI STANDARD (Vocero y charla general)");
-            }
-
             let intentoExitosoGemini = false;
             let intentosRealizados = 0;
 
@@ -151,47 +146,39 @@ app.post('/api/chat', async (req, res) => {
                     const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceLlaveGemini]);
                     const model = genAI.getGenerativeModel({ 
                         model: "gemini-2.5-flash", 
-                        generationConfig: { maxOutputTokens: 2000, temperature: 0.6 } 
+                        tools: [{ googleSearch: {} }], 
+                        generationConfig: { maxOutputTokens: 2000, temperature: 0.3 } // Temperatura baja para evitar alucinaciones
                     });
 
                     if (archivoBase64) {
                         const partes = [
-                            { text: systemPromptGemini + "\n\nMensaje del estudiante adjunto a un archivo: " + (mensaje || "Analiza esta imagen y ayúdame, campeón.") },
+                            { text: promptDinamico + "\n\nAnaliza la imagen o QR adjunto y responde al usuario: " + (mensaje || "¿Qué ves aquí?") },
                             { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
                         ];
                         const result = await model.generateContent(partes);
                         textoIA = result.response.text();
                     } else {
-                        let promptAUsar = systemPromptGemini;
-                        if (requiereNvidia) promptAUsar += "\nREGLA EXTRA: Resuelve el problema matemático solicitado paso a paso, muy conciso.";
-                        
-                        const result = await model.generateContent(`${promptAUsar}\n\nMensaje del estudiante: ${mensaje}`);
+                        const result = await model.generateContent(`${promptDinamico}\n\nMensaje del estudiante: ${mensaje}`);
                         textoIA = result.response.text();
                     }
-                    
                     intentoExitosoGemini = true;
-
                 } catch (errorGemini) {
-                    console.log(`⚠️ Llave Gemini [${indiceLlaveGemini}] saturada. Cambiando a llave de respaldo...`);
                     indiceLlaveGemini = (indiceLlaveGemini + 1) % LLAVES_GEMINI.length;
                     intentosRealizados++;
                 }
             }
-
-            if (!intentoExitosoGemini) {
-                throw new Error("COLAPSO TOTAL: Todas las llaves de Gemini están saturadas.");
-            }
+            if (!intentoExitosoGemini) throw new Error("Gemini saturado.");
         }
 
         res.json({ respuesta: textoIA });
 
     } catch (error) {
-        console.error("Error Crítico del Núcleo:", error);
-        res.status(500).json({ error: "¡Uf! Mis circuitos cuánticos están súper saturados, campeón. 🔌 ¡Dame 5 segundos, respira profundo y envíame el mensaje de nuevo!" });
+        console.error("Error Núcleo:", error);
+        res.status(500).json({ error: "¡Uf! Mis circuitos están saturados. 🔌 ¡Dame 5 segundos y vuelve a intentarlo!" });
     }
 });
 
 const PUERTO = process.env.PORT || 3000;
 app.listen(PUERTO, () => {
-    console.log(`🦅 FÉNIX CORE V2 - PROTOCOLO TITÁN (MULTILLAVES) EN PUERTO ${PUERTO}`);
+    console.log(`🦅 FÉNIX V6 (BLINDADO Y DETALLADO) OPERATIVO EN PUERTO ${PUERTO}`);
 });

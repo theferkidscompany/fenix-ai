@@ -72,7 +72,7 @@ app.post('/api/chat', async (req, res) => {
     try {
         if (LLAVES_GEMINI.length === 0) return res.status(500).json({ error: "⚠️ Error de Servidor: Las llaves no están configuradas." });
 
-        const { mensaje, archivoBase64, mimeType, temperamento, historial, generarTitulo } = req.body;
+        const { mensaje, archivoBase64, mimeType, temperamento, historial, generarTitulo, modo, configMemoria } = req.body;
         const mensajeLimpio = mensaje ? mensaje.toLowerCase() : "";
 
         let tituloNuevo = null;
@@ -90,7 +90,10 @@ app.post('/api/chat', async (req, res) => {
         // ======================================================================
         let promptDinamico = `Eres Fénix, la IA oficial de "Revolution JPII" (El movimiento Revolucionario del Colegio Juan Pablo II). Tu misión es ayudar y convencer a los estudiantes con la verdad.\n\n${memoriaBase}\n\n`;
 
-        if (temperamento === 'analitico') {
+        if (temperamento === 'estudio' || modo === 'estudio') {
+            promptDinamico += `ESTÁS EN MODO ESTUDIO.
+            Eres un tutor claro, paciente y exigente. Explica paso a paso, detecta ambigüedades, ironías suaves y corrige errores de concepto sin humillar. Primero da la respuesta breve, luego la explicación, luego una mini pregunta de comprobación.`;
+        } else if (temperamento === 'analitico') {
             promptDinamico += `ESTÁS EN MODO ANALÍTICO.
             Eres calculador y objetivo. Ofrece debate intelectual (debes desafiar al usuario) y corrige si es necesario. Cero emojis.`;
         } else if (temperamento === 'creativo') {
@@ -104,12 +107,20 @@ app.post('/api/chat', async (req, res) => {
         // LAS NUEVAS REGLAS DE ORO (Flexibilidad y Veracidad)
         promptDinamico += `\n\nREGLAS DE ORO INQUEBRANTABLES:
         1. LA VERDAD Y EL MUNDO: Sobre la campaña escolar, tu ÚNICA fuente de verdad es el Plan de Gobierno (NUNCA inventes propuestas que no estén ahí). Sin embargo, si te preguntan del mundo exterior (Champions League, noticias, tareas), SÍ DEBES RESPONDER usando tu conocimiento general o búsqueda en internet. Si el usuario te sugiere una propuesta escolar nueva, aplica OBLIGATORIAMENTE la Regla 5.
-        2. BREVEDAD INTELIGENTE: Si es una charla coloquial, dudas simples, tareas o matemáticas, sé SÚPER BREVE y directo. PERO si te piden explicar una propuesta política de la campaña, DESARRÓLLALA con entusiasmo, claridad y usando viñetas para convencer al estudiante, sin ser exagerado ni aburrido.
+        2. BREVEDAD INTELIGENTE: Si es una charla coloquial, dudas simples, tareas o matemáticas, sé SÚPER BREVE y directo. PERO si te piden explicar una propuesta política de la campaña o estás en modo estudio, DESARRÓLLALA con claridad, orden y ejemplos útiles.
         3. EL GANCHO CONVERSACIONAL: NUNCA repitas innecesariamente el lema "LA REVOLUCIÓN ACABA DE COMENZAR" ni los valores como disco rayado en cada mensaje. Úsalos solo si es estrictamente necesario para motivar. Lo que SÍ DEBES HACER SIEMPRE es terminar tu respuesta con UNA sola pregunta corta y natural relacionada al tema para mantener la conversación viva.
         4. CERO PRESENTACIONES: Nunca digas "Hola, soy Fénix" ni repitas tus valores al iniciar un mensaje. Ve directo al grano.
         5. EL BUZÓN DE SUGERENCIAS: Si un estudiante te da una idea, sugerencia, queja o propone algo nuevo para mejorar el colegio, no analices la idea, simplemente dile TEXTUALMENTE esto: "¡Qué ideota, capitán! Presiona el botón del foquito (💡) que está en la barra de abajo para enviarla directamente al buzón personal de Fernando y el equipo."
         6. REGLA ANTI-BIPOLARIDAD (CRÍTICA): NUNCA generes dos respuestas en un mismo mensaje. Escribe UNA SOLA respuesta final, en un solo bloque coherente. ESTÁ ESTRICTAMENTE PROHIBIDO repetir el saludo o la despedida dos veces.`;
-        
+
+        if (configMemoria === 'corta') {
+            promptDinamico += `\nMEMORIA ACTIVA: CORTA. Usa solo el contexto más reciente y no arrastres temas viejos si no aportan.`;
+        } else if (configMemoria === 'profunda') {
+            promptDinamico += `\nMEMORIA ACTIVA: PROFUNDA. Conecta el mensaje actual con el historial reciente del estudiante para dar continuidad y contexto.`;
+        } else {
+            promptDinamico += `\nMEMORIA ACTIVA: NORMAL. Usa el historial reciente solo cuando mejore claridad y coherencia.`;
+        }
+
         let contextoConversacion = promptDinamico;
         if (historial && historial.length > 0) {
             contextoConversacion += "\n\n--- HISTORIAL DE ESTA CONVERSACIÓN (MEMORIA) ---\n";
@@ -117,10 +128,8 @@ app.post('/api/chat', async (req, res) => {
             contextoConversacion += "----------------------------------------------\n";
         }
         contextoConversacion += "\nINSTRUCCIÓN CRÍTICA: Utiliza excelente formato Markdown (viñetas, negritas, bloques de código). Aprende de la retroalimentación humana, entiende las ironías y las sutilezas del lenguaje. Y LO MÁS IMPORTANTE: ¡NUNCA CORTES TUS RESPUESTAS A LA MITAD, entrega siempre la solución completa y formateada de forma profesional!";
-
         // Radar Lógico para NVIDIA
-        
-        // Radar Lógico para NVIDIA
+                // Radar Lógico para NVIDIA
         const raicesLogicas = ["calcul", "resolv", "resuelv", "matemat", "ecuacion", "fisic", "quimic", "derivada", "integral", "problema", "cuant", "edad", "suma", "resta", "multiplic", "divid", "fraccion", "porcentaje", "logic", " pi ", "geometria", "trigonometria", "algoritmo", "codigo"];
         const operadoresMates = ["+", "-", "*", "/", "=", "%"];
         const requiereNvidia = raicesLogicas.some(raiz => mensajeLimpio.includes(raiz)) || operadoresMates.some(op => mensajeLimpio.includes(op));
@@ -128,27 +137,44 @@ app.post('/api/chat', async (req, res) => {
         let textoIA = "";
         let nvidiaTuvoExito = false;
 
-        // RUTA 1: NVIDIA (MATEMÁTICAS)
-        if (requiereNvidia && !archivoBase64) {
-            for (let i = 0; i < MODELOS_NVIDIA.length; i++) {
-                const modeloNvidia = MODELOS_NVIDIA[i];
-                if (!modeloNvidia.key) continue; 
+        const requiereRutaNvidia = (requiereNvidia || temperamento === 'estudio' || modo === 'estudio') && !archivoBase64;
+
+        // RUTA 1: NVIDIA (MATEMÁTICAS + ESTUDIO)
+        if (requiereRutaNvidia) {
+            const modelosOrdenados = (temperamento === 'estudio' || modo === 'estudio')
+                ? [
+                    MODELOS_NVIDIA.find(m => m.id === "deepseek-ai/deepseek-r1"),
+                    MODELOS_NVIDIA.find(m => m.id === "meta/llama-3.1-70b-instruct"),
+                    MODELOS_NVIDIA.find(m => m.id === "qwen/qwen2.5-coder-32b-instruct")
+                ].filter(Boolean)
+                : MODELOS_NVIDIA;
+
+            for (let i = 0; i < modelosOrdenados.length; i++) {
+                const modeloNvidia = modelosOrdenados[i];
+                if (!modeloNvidia.key) continue;
+
                 try {
+                    const instruccionExtra = (temperamento === 'estudio' || modo === 'estudio')
+                        ? "Explica como tutor experto: primero respuesta breve, luego explicación paso a paso, ejemplo corto y mini práctica final. Detecta ambigüedades e ironías suaves. No cortes la respuesta."
+                        : "Resuelve el problema matemático paso a paso con FORMATO IMPECABLE. Jamás cortes la respuesta.";
+
                     const respuestaNvidia = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${modeloNvidia.key}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             model: modeloNvidia.id,
                             messages: [
-                                { "role": "system", "content": contextoConversacion + "\n\nINSTRUCCIÓN EXTRA: Resuelve el problema matemático paso a paso con FORMATO IMPECABLE. Jamás cortes la respuesta." },
+                                { "role": "system", "content": contextoConversacion + "\n\nINSTRUCCIÓN EXTRA: " + instruccionExtra },
                                 { "role": "user", "content": mensaje }
                             ],
-                            temperature: temperamento === 'analitico' ? 0.1 : 0.4,
+                            temperature: (temperamento === 'analitico' || temperamento === 'estudio' || modo === 'estudio') ? 0.2 : 0.4,
                             max_tokens: 4096
                         })
                     });
+
                     const datosNvidia = await respuestaNvidia.json();
-                    if (datosNvidia.choices && datosNvidia.choices[0] && datosNvidia.choices[0].message.content) {
+
+                    if (datosNvidia.choices && datosNvidia.choices[0] && datosNvidia.choices[0].message && datosNvidia.choices[0].message.content) {
                         textoIA = datosNvidia.choices[0].message.content;
                         nvidiaTuvoExito = true;
                         break;
@@ -156,7 +182,6 @@ app.post('/api/chat', async (req, res) => {
                 } catch (errorNvidia) {}
             }
         }
-
         // RUTA 2: GEMINI (MATRIX + IMÁGENES + CHARLA Y CAMPAÑA)
         if (!nvidiaTuvoExito) {
             let intentoExitosoGemini = false;

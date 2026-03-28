@@ -78,11 +78,15 @@ app.post('/api/chat', async (req, res) => {
         let tituloNuevo = null;
         if (generarTitulo && mensaje) {
             try {
-                const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[0]);
+                const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceLlaveGemini]);
                 const modelT = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-                const resT = await modelT.generateContent(`Genera un título muy breve (máximo 4 palabras) que resuma este mensaje: "${mensaje}". Solo dame el título, sin comillas ni puntos.`);
+                const resT = await modelT.generateContent(
+                    `Genera un título muy breve (máximo 4 palabras) que resuma este mensaje: "${mensaje}". Solo dame el título, sin comillas ni puntos.`
+                );
                 tituloNuevo = resT.response.text().trim().replace(/['"]/g, '');
-            } catch(e) { console.log("Error título:", e); }
+            } catch (e) {
+                console.log("Error título:", e?.message || e);
+            }
         }
 
         // ======================================================================
@@ -186,47 +190,57 @@ app.post('/api/chat', async (req, res) => {
         if (!nvidiaTuvoExito) {
             let intentoExitosoGemini = false;
             let intentosRealizados = 0;
+            let ultimoErrorGemini = null;
 
             while (!intentoExitosoGemini && intentosRealizados < LLAVES_GEMINI.length) {
+                const llaveActual = LLAVES_GEMINI[indiceLlaveGemini];
+
                 try {
-                    const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceLlaveGemini]);
-                    const model = genAI.getGenerativeModel({ 
-                        model: "gemini-2.5-flash", 
+                    const genAI = new GoogleGenerativeAI(llaveActual);
+                    const model = genAI.getGenerativeModel({
+                        model: "gemini-2.5-flash",
                         systemInstruction: contextoConversacion,
-                        tools: [{ googleSearch: {} }], 
-                        generationConfig: { maxOutputTokens: 8192, temperature: 0.3 } 
+                        tools: [{ googleSearch: {} }],
+                        generationConfig: {
+                            maxOutputTokens: 8192,
+                            temperature: 0.3
+                        }
                     });
 
-                    if (archivoBase64) {
-                        const partes = [
-                            { text: "Analiza la imagen o QR adjunto y responde al usuario. NUNCA CORTES LA RESPUESTA. Mensaje: " + (mensaje || "¿Qué ves aquí?") },
-                            { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
-                        ];
-                        const result = await model.generateContent(partes);
-                        textoIA = result.response.text();
-                    } else {
-                        const result = await model.generateContent(`Mensaje actual del estudiante: ${mensaje}`);
-                        textoIA = result.response.text();
-                    }
+                    let result;
 
                     if (archivoBase64) {
                         const partes = [
-                            { text: promptDinamico + "\n\nAnaliza la imagen o QR adjunto y responde al usuario: " + (mensaje || "¿Qué ves aquí?") },
-                            { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
+                            {
+                                text: "Analiza la imagen o QR adjunto y responde al usuario. NUNCA CORTES LA RESPUESTA. Mensaje: " + (mensaje || "¿Qué ves aquí?")
+                            },
+                            {
+                                inlineData: {
+                                    data: archivoBase64.split(',')[1],
+                                    mimeType: mimeType
+                                }
+                            }
                         ];
-                        const result = await model.generateContent(partes);
-                        textoIA = result.response.text();
+                        result = await model.generateContent(partes);
                     } else {
-                        const result = await model.generateContent(`${promptDinamico}\n\nMensaje del estudiante: ${mensaje}`);
-                        textoIA = result.response.text();
+                        result = await model.generateContent(`Mensaje del estudiante: ${mensaje}`);
                     }
+
+                    textoIA = result.response.text();
                     intentoExitosoGemini = true;
+
                 } catch (errorGemini) {
+                    ultimoErrorGemini = errorGemini;
+                    console.error(`Gemini falló con la llave #${indiceLlaveGemini + 1}:`, errorGemini?.message || errorGemini);
+
                     indiceLlaveGemini = (indiceLlaveGemini + 1) % LLAVES_GEMINI.length;
                     intentosRealizados++;
                 }
             }
-            if (!intentoExitosoGemini) throw new Error("Gemini saturado.");
+
+            if (!intentoExitosoGemini) {
+                throw new Error(`Fallaron todas las llaves Gemini. Último error: ${ultimoErrorGemini?.message || ultimoErrorGemini}`);
+            }
         }
 
         res.json({ respuesta: textoIA, tituloNuevo: tituloNuevo });

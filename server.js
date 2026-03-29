@@ -34,6 +34,7 @@ const LLAVES_GEMINI = geminiKeysString
     .filter((k) => k.length > 0);
 
 let indiceLlaveGemini = 0;
+const ESTADO_LLAVES_GEMINI = [];
 
 const MODELOS_NVIDIA = [
     { id: 'qwen/qwen2.5-coder-32b-instruct', key: process.env.NVIDIA_QWEN_KEY },
@@ -153,6 +154,25 @@ function contarPalabras(texto) {
     return limpiarTexto(texto).split(' ').filter(Boolean).length;
 }
 
+function llaveGeminiDisponible(indice) {
+    const estado = ESTADO_LLAVES_GEMINI[indice];
+    return !estado || !estado.bloqueadaHasta || Date.now() > estado.bloqueadaHasta;
+}
+
+function bloquearLlaveGemini(indice, ms, motivo) {
+    ESTADO_LLAVES_GEMINI[indice] = {
+        bloqueadaHasta: Date.now() + ms,
+        motivo: motivo || 'bloqueo temporal'
+    };
+}
+
+function extraerRetryMs(error) {
+    const texto = (error?.message || error || '').toString();
+    const m = texto.match(/retry in\s+(\d+(?:\.\d+)?)s/i) || texto.match(/retryDelay":"(\d+)s/i);
+    if (!m) return 0;
+    return Math.ceil(parseFloat(m[1]) * 1000);
+}
+
 function obtenerFechaHoraPeru() {
     const ahora = new Date();
     return new Intl.DateTimeFormat('es-PE', {
@@ -237,7 +257,7 @@ function construirEtiquetaPerfil(perfilAcademico) {
         : 'secundaria';
 }
 
-function inferirModoAutomatico(mensajeLimpio, modoSolicitado, perfilAcademico, ajusteAlgoritmo) {
+function inferirModoAutomatico(mensajeLimpio, modoSolicitado, perfilAcademico, ajusteAlgoritmo, modoManual = false) {
     const base = quitarTildes(mensajeLimpio);
 
     const pistasEstudio = [
@@ -305,6 +325,9 @@ function inferirModoAutomatico(mensajeLimpio, modoSolicitado, perfilAcademico, a
     ];
 
     if (modoSolicitado && ['politico', 'analitico', 'creativo', 'estudio'].includes(modoSolicitado)) {
+        if (modoManual) {
+            return modoSolicitado;
+        }
         if (modoSolicitado !== 'politico') {
             return modoSolicitado;
         }
@@ -668,16 +691,14 @@ PROYECTO ESPECIAL (Alcalde Fernando):
 const memoriaBaseCompacta = `
 PLAN REVOLUTION JPII EN RESUMEN:
 - 5 ejes: Educación/Cultura/Deporte, Comunicación/Tecnología, Emprendimiento, Salud/Medio Ambiente y Derechos del Niño.
-- Idea central: mejorar el colegio con tecnología, reciclaje, clubes, deporte, emprendimiento y bienestar estudiantil.
-- Fénix IA forma parte del eje de Comunicación y Tecnología.
-- Si preguntan por el plan, por defecto responde con ejes e ideas principales. Solo entra en detalle si el usuario pide "detállalo", "eje por eje", "completo", "para exponer" o algo similar.
+- Por defecto responde con ejes e ideas principales. Solo entra en detalle si el usuario lo pide.
 `;
 
 const diccionarioLocalCompacto = `
 LENGUAJE Y ESTILO:
-- Entiende jerga escolar/local y errores comunes sin pedir aclaración innecesaria.
-- Si el usuario pide corto, simple, para copiar o al grano, responde así.
-- Colegio bilingüe: usa toques cortos de inglés solo cuando encaje natural.
+- Entiende jerga escolar/local y errores comunes.
+- Si piden corto, simple o para copiar, responde así.
+- Usa inglés breve solo si encaja natural.
 `;
 
 function detectarPeticionDetallada(mensajeLimpio) {
@@ -703,10 +724,10 @@ function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
 }
 
 function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, requiereGoogle }) {
-    if (archivoBase64) return 260;
-    if (peticionCorta) return requiereGoogle ? 320 : 220;
-    if (detallado) return requiereGoogle ? 820 : 680;
-    return requiereGoogle ? 520 : 420;
+    if (archivoBase64) return 220;
+    if (peticionCorta) return requiereGoogle ? 240 : 170;
+    if (detallado) return requiereGoogle ? 680 : 560;
+    return requiereGoogle ? 360 : 280;
 }
 
 // ======================================================================
@@ -734,7 +755,8 @@ app.post('/api/chat', async (req, res) => {
             ajusteAlgoritmo,
             userMeta,
             preferenciasUsuario,
-            busquedaProfunda
+            busquedaProfunda,
+            modoManual
         } = req.body;
 
         const mensajeSeguro = limpiarTexto(mensaje);
@@ -750,7 +772,8 @@ app.post('/api/chat', async (req, res) => {
             mensajeLimpio,
             modo || temperamento,
             perfilAcademico,
-            ajusteAlgoritmo
+            ajusteAlgoritmo,
+            !!modoManual
         );
 
         const peticionCorta = detectarPeticionCorta(mensajeLimpio);
@@ -872,6 +895,7 @@ REGLAS DE ORO INQUEBRANTABLES:
 
         let textoIA = '';
         let nvidiaTuvoExito = false;
+        let motorUsado = 'gemini';
 
         const requiereRutaNvidia =
             requiereNvidia &&
@@ -943,6 +967,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                     ) {
                         textoIA = datosNvidia.choices[0].message.content;
                         nvidiaTuvoExito = true;
+                        motorUsado = `nvidia:${modeloNvidia.id.split('/')[0]}`;
                         break;
                     }
                 } catch (errorNvidia) {
@@ -959,8 +984,18 @@ REGLAS DE ORO INQUEBRANTABLES:
             let intentosRealizados = 0;
             let ultimoErrorGemini = null;
 
+            const inicioRotacion = indiceLlaveGemini;
+            indiceLlaveGemini = (indiceLlaveGemini + 1) % Math.max(LLAVES_GEMINI.length, 1);
+
             while (!intentoExitosoGemini && intentosRealizados < LLAVES_GEMINI.length) {
-                const llaveActual = LLAVES_GEMINI[indiceLlaveGemini];
+                const indiceActual = (inicioRotacion + intentosRealizados) % LLAVES_GEMINI.length;
+
+                if (!llaveGeminiDisponible(indiceActual)) {
+                    intentosRealizados++;
+                    continue;
+                }
+
+                const llaveActual = LLAVES_GEMINI[indiceActual];
 
                 try {
                     const genAI = new GoogleGenerativeAI(llaveActual);
@@ -986,7 +1021,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                         const partes = [
                             {
                                 text:
-                                    'Analiza la imagen o QR adjunto y responde de forma clara y breve. Mensaje: ' +
+                                    'Analiza el archivo adjunto. Primero extrae el texto visible o el enunciado exacto. Si es una pregunta de matemáticas o razonamiento, resuélvela completa. Si el usuario pide solo la clave, solo da la alternativa. Si pide explicación breve, da respuesta + explicación breve. Mensaje actual: ' +
                                     (mensajeSeguro || '¿Qué ves aquí?')
                             },
                             {
@@ -1003,24 +1038,36 @@ REGLAS DE ORO INQUEBRANTABLES:
                     }
 
                     textoIA = result.response.text();
+                    motorUsado = requiereGoogle ? 'gemini+search' : 'gemini';
                     intentoExitosoGemini = true;
                 } catch (errorGemini) {
                     ultimoErrorGemini = errorGemini;
+                    const textoError = (errorGemini?.message || errorGemini || '').toString();
+                    const retryMs = extraerRetryMs(errorGemini);
+                    const esCuota = /429|quota exceeded|too many requests/i.test(textoError);
 
                     console.error(
-                        `Gemini falló con la llave #${indiceLlaveGemini + 1}:`,
+                        `Gemini falló con la llave #${indiceActual + 1}:`,
                         errorGemini?.message || errorGemini
                     );
 
-                    indiceLlaveGemini = (indiceLlaveGemini + 1) % LLAVES_GEMINI.length;
+                    if (esCuota) {
+                        bloquearLlaveGemini(indiceActual, Math.max(retryMs, 30 * 60 * 1000), 'cuota');
+                    }
+
                     intentosRealizados++;
                 }
             }
 
             if (!intentoExitosoGemini) {
-                throw new Error(
-                    `Fallaron todas las llaves Gemini. Último error: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
-                );
+                if (!textoIA && !archivoBase64) {
+                    textoIA = 'Hoy Gemini está saturado o sin cuota en las llaves disponibles. Intenté rotar entre proyectos, pero no quedaron libres. Reformula corto o prueba otra vez en unos minutos.';
+                    motorUsado = 'fallback';
+                } else {
+                    throw new Error(
+                        `Fallaron todas las llaves Gemini. Último error: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
+                    );
+                }
             }
         }
 
@@ -1031,6 +1078,7 @@ REGLAS DE ORO INQUEBRANTABLES:
             tituloNuevo,
             modoAplicado,
             requiereGoogle,
+            motor: motorUsado,
             alerta: {
                 activada: false
             }
@@ -1121,6 +1169,16 @@ app.get('/api/admin/resumen', async (req, res) => {
 
         return res.json({
             ok: true,
+            estado: 'Online',
+            kpis: {
+                alertas: alertas.length,
+                feedback: feedback.length,
+                chats: 0
+            },
+            logs: [
+                ...alertas.slice(0, 6).map((a) => ({ titulo: 'Alerta', detalle: `${a.categoria || 'general'} · ${(a.nombre || a.email || 'Sin nombre')} · ${(a.mensaje || '').slice(0, 120)}` })),
+                ...feedback.slice(0, 6).map((f) => ({ titulo: 'Feedback', detalle: `${f.tipo || 'sin tipo'} · ${f.motivo || 'sin motivo'}` }))
+            ],
             alertas,
             feedback
         });

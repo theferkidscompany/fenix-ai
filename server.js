@@ -600,6 +600,51 @@ PROYECTO ESPECIAL (Alcalde Fernando):
 - Financiamiento total: Autogestión limpia con The Green Squad, Liga Fénix y Agencia de Diseño. Cero falsas promesas.
 `;
 
+
+const memoriaBaseCompacta = `
+PLAN REVOLUTION JPII EN RESUMEN:
+- 5 ejes: Educación/Cultura/Deporte, Comunicación/Tecnología, Emprendimiento, Salud/Medio Ambiente y Derechos del Niño.
+- Idea central: mejorar el colegio con tecnología, reciclaje, clubes, deporte, emprendimiento y bienestar estudiantil.
+- Fénix IA forma parte del eje de Comunicación y Tecnología.
+- Si preguntan por el plan, por defecto responde con ejes e ideas principales. Solo entra en detalle si el usuario pide "detállalo", "eje por eje", "completo", "para exponer" o algo similar.
+`;
+
+const diccionarioLocalCompacto = `
+LENGUAJE Y ESTILO:
+- Entiende jerga escolar/local y errores comunes sin pedir aclaración innecesaria.
+- Si el usuario pide corto, simple, para copiar o al grano, responde así.
+- Colegio bilingüe: usa toques cortos de inglés solo cuando encaje natural.
+`;
+
+function detectarPeticionDetallada(mensajeLimpio) {
+    return textoIncluyeAlguno(mensajeLimpio, [
+        'detall',
+        'detalle',
+        'eje por eje',
+        'explica completo',
+        'completo',
+        'desarrolla',
+        'desarróll',
+        'para exponer',
+        'guion',
+        'discurso'
+    ]);
+}
+
+function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
+    return (historial || []).map((msg) => ({
+        emisor: msg.emisor,
+        texto: limpiarTexto(msg.texto || '').slice(0, maxCharsPorMensaje)
+    }));
+}
+
+function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, requiereGoogle }) {
+    if (archivoBase64) return 380;
+    if (peticionCorta) return requiereGoogle ? 420 : 320;
+    if (detallado) return requiereGoogle ? 1000 : 850;
+    return requiereGoogle ? 720 : 560;
+}
+
 // ======================================================================
 // ENDPOINT PRINCIPAL DE CHAT
 // ======================================================================
@@ -623,7 +668,9 @@ app.post('/api/chat', async (req, res) => {
             primerMensajeUsuario,
             perfilAcademico,
             ajusteAlgoritmo,
-            userMeta
+            userMeta,
+            preferenciasUsuario,
+            busquedaProfunda
         } = req.body;
 
         const mensajeSeguro = limpiarTexto(mensaje);
@@ -641,6 +688,9 @@ app.post('/api/chat', async (req, res) => {
             perfilAcademico,
             ajusteAlgoritmo
         );
+
+        const peticionCorta = detectarPeticionCorta(mensajeLimpio);
+        const peticionDetallada = detectarPeticionDetallada(mensajeLimpio);
 
         if (riesgo.activar) {
             const perfilTexto = construirEtiquetaPerfil(perfilAcademico);
@@ -680,13 +730,7 @@ app.post('/api/chat', async (req, res) => {
 
         if (modoAplicado === 'estudio') {
             promptDinamico += `ESTÁS EN MODO ESTUDIO.
-Actúas como un excelente tutor moderno estilo best of Gemini + ChatGPT + tutor humano.
-- Primero entiendes el nivel del estudiante.
-- Luego respondes con claridad, orden y economía de palabras.
-- Si el ejercicio es simple, responde en 2 a 5 líneas.
-- Si es intermedio, usa solo los pasos esenciales.
-- Si es complejo, enseña bien, pero sin volverte un testamento.
-- No pongas mini práctica, ejemplo extra ni párrafos decorativos salvo que el usuario lo pida.`;
+Actúas como un excelente tutor moderno. Primero entiendes el nivel del estudiante y luego respondes con claridad y economía de palabras. Si el ejercicio es simple, responde en 2 a 5 líneas. Si es complejo, usa solo los pasos esenciales. Solo desarrolla mucho si el usuario lo pide.`;
         } else if (modoAplicado === 'analitico') {
             promptDinamico += `ESTÁS EN MODO ANALÍTICO.
 Eres calculador, objetivo y estratégico. Analizas con precisión, comparas y argumentas bien. Cero emojis salvo que ayuden muchísimo.`;
@@ -701,43 +745,13 @@ Eres un compañero empático, leal e inspirador. Debes sembrar interés por Revo
         promptDinamico += `
 
 REGLAS DE ORO INQUEBRANTABLES:
-0. PRIORIDAD ABSOLUTA AL CONTEXTO EXPLÍCITO DEL USUARIO:
-   - Si el usuario aclara el tema con frases como "me refiero a...", "hablo de...", "en este caso..." o da nombres, país, época o contexto específico, esa aclaración manda por encima de cualquier interpretación previa.
-   - No pidas más contexto si ya fue dado.
-   - Si el tema es externo al colegio, sí puedes responder con conocimiento general o búsqueda web.
-
-1. LA VERDAD Y EL MUNDO:
-   - Sobre la campaña escolar, tu única fuente de verdad es el Plan de Gobierno.
-   - Sobre el mundo exterior, sí puedes usar conocimiento general y búsqueda web cuando haga falta.
-
-2. BREVEDAD INTELIGENTE:
-   - Si es charla, duda simple, tarea, exposición o matemática, sé súper breve y directo.
-   - Si el usuario pide "resumido", "corto", "simple", "para copiar" o parecido, obedece con máxima brevedad.
-   - No conviertas respuestas simples en textos largos.
-
-3. ADAPTACIÓN AUTOMÁTICA:
-   - Debes adaptar dificultad, tono y forma según perfil académico, grado y tipo de mensaje.
-   - El estudiante no debe adaptarse a Fénix; Fénix debe adaptarse al estudiante.
-
-4. ENFOQUE BILINGÜE:
-   - Por ser colegio bilingüe, puedes insertar 1 o 2 palabras cortas en inglés cuando encaje de forma natural, para reforzar el ambiente bilingual.
-   - Nunca conviertas la respuesta en un texto raro o forzado.
-
-5. GANCHO CONVERSACIONAL:
-   - Mantén el gancho político cuando encaje, de forma natural y no forzada.
-   - Termina con una sola pregunta corta y útil, relacionada al tema.
-
-6. CERO PRESENTACIONES:
-   - No digas "Hola, soy Fénix" ni repitas tus valores al iniciar cada mensaje.
-   - Ve directo al grano.
-
-7. BUZÓN DE SUGERENCIAS:
-   - Si el usuario da una idea para mejorar el colegio, oriéntalo al buzón Fénix.
-
-8. REGLA ANTI-BIPOLARIDAD:
-   - Escribe una sola respuesta final, en un solo bloque coherente.
-   - No repitas saludos ni cierres.
-`;
+0. Si el usuario aclara el contexto, esa aclaración manda.
+1. Sobre la campaña escolar, usa solo el Plan de Gobierno. Sobre temas externos, usa conocimiento general y web cuando haga falta.
+2. Sé breve por defecto. Si el usuario pide corto, resumido, simple o para copiar, responde con máxima síntesis.
+3. Adáptate automáticamente al perfil, grado y tipo de mensaje.
+4. Usa toques de inglés solo si encajan natural y ayudan.
+5. Mantén el gancho político solo cuando encaje; nunca lo fuerces.
+6. No repitas saludos ni cierres y da una sola respuesta coherente.`;
 
         if (configMemoria === 'corta') {
             promptDinamico += `\nMEMORIA ACTIVA: CORTA. Usa solo el contexto más reciente y no arrastres temas viejos si no aportan.`;
@@ -760,24 +774,29 @@ REGLAS DE ORO INQUEBRANTABLES:
             promptDinamico += `\nAJUSTE DE ALGORITMO: EQUILIBRADO. Responde natural, claro y con buena síntesis.`;
         }
 
-        if (detectarPeticionCorta(mensajeLimpio)) {
-            promptDinamico += `\nPETICIÓN ESPECIAL DEL USUARIO: RESPUESTA CORTA. Máximo enfoque, mínimo relleno.`;
+        if (peticionCorta) {
+            promptDinamico += `\nPETICIÓN ESPECIAL: RESPUESTA CORTA. Máximo enfoque, mínimo relleno.`;
+        }
+
+        if (mensajeLimpio.includes('plan de gobierno') && !peticionDetallada) {
+            promptDinamico += `\nSI EL USUARIO PIDE EL PLAN DE GOBIERNO Y NO PIDE DETALLE, responde con ejes e ideas principales, no con desarrollo largo.`;
         }
 
         let contextoConversacion = promptDinamico;
+        const historialCompacto = compactarHistorialParaPrompt(historial, configMemoria === 'profunda' ? 220 : 160);
 
-        if (historial && historial.length > 0) {
+        if (historialCompacto && historialCompacto.length > 0) {
             contextoConversacion += '\n\n--- HISTORIAL DE ESTA CONVERSACIÓN (MEMORIA) ---\n';
-            historial.forEach((msg) => {
+            historialCompacto.forEach((msg) => {
                 contextoConversacion += `${msg.emisor === 'user' ? 'Estudiante' : 'Fénix'}: ${msg.texto}\n`;
             });
             contextoConversacion += '----------------------------------------------\n';
         }
 
-        contextoConversacion += '\nINSTRUCCIÓN CRÍTICA FINAL: Usa formato Markdown solo cuando ayude. Mantén por defecto respuestas concisas, claras y ordenadas. Evita relleno, repeticiones, ejemplos extra o introducciones largas salvo que el usuario lo pida. Nunca cortes respuestas a la mitad.';
+        contextoConversacion += '\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad.';
 
         const requiereNvidia = detectarTemaMatematico(mensajeLimpio);
-        const requiereGoogle = detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo);
+        const requiereGoogle = detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) || !!busquedaProfunda;
 
         let textoIA = '';
         let nvidiaTuvoExito = false;
@@ -837,7 +856,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                                     modoAplicado === 'analitico' || modoAplicado === 'estudio'
                                         ? 0.2
                                         : 0.4,
-                                max_tokens: detectarPeticionCorta(mensajeLimpio) ? 700 : 1200
+                                max_tokens: obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado: peticionDetallada, requiereGoogle })
                             })
                         }
                     );
@@ -878,7 +897,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                         model: 'gemini-2.5-flash',
                         systemInstruction: contextoConversacion,
                         generationConfig: {
-                            maxOutputTokens: detectarPeticionCorta(mensajeLimpio) ? 700 : 1400,
+                            maxOutputTokens: obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado: peticionDetallada, requiereGoogle }),
                             temperature: ajusteAlgoritmo === 'breve' ? 0.2 : 0.3
                         }
                     };
@@ -895,7 +914,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                         const partes = [
                             {
                                 text:
-                                    'Analiza la imagen o QR adjunto y responde al usuario. Mantén claridad y no te extiendas de más. Mensaje: ' +
+                                    'Analiza la imagen o QR adjunto y responde de forma clara y breve. Mensaje: ' +
                                     (mensajeSeguro || '¿Qué ves aquí?')
                             },
                             {
@@ -1001,6 +1020,11 @@ app.post('/api/feedback', async (req, res) => {
 // ======================================================================
 app.get('/api/admin/resumen', async (req, res) => {
     try {
+        const adminEmailRecibido = (req.headers['x-admin-email'] || req.query.email || '').toString().toLowerCase();
+        if (ADMIN_ALERT_EMAIL && adminEmailRecibido && adminEmailRecibido !== ADMIN_ALERT_EMAIL.toLowerCase()) {
+            return res.status(403).json({ ok: false, mensaje: 'No autorizado.' });
+        }
+
         if (!firestoreAdmin) {
             return res.json({
                 ok: false,

@@ -2,13 +2,31 @@ const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+let nodemailer = null;
+let admin = null;
+
+try {
+    nodemailer = require('nodemailer');
+} catch (e) {
+    console.warn('Nodemailer no está instalado. El envío de correos de alerta quedará desactivado.');
+}
+
+try {
+    admin = require('firebase-admin');
+} catch (e) {
+    console.warn('firebase-admin no está instalado. El guardado de alertas/feedback en Firestore del servidor quedará desactivado.');
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // ======================================================================
-// CONFIGURACIÓN DE LLAVES Y SISTEMAS HIDRA
+// CONFIGURACIÓN GENERAL
 // ======================================================================
+const PUERTO = process.env.PORT || 3000;
+const ADMIN_ALERT_EMAIL = process.env.ADMIN_ALERT_EMAIL || 'theferkidscompany@gmail.com';
+
 const geminiKeysString = process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || '';
 const LLAVES_GEMINI = geminiKeysString
     .split(',')
@@ -22,6 +40,61 @@ const MODELOS_NVIDIA = [
     { id: 'deepseek-ai/deepseek-r1', key: process.env.NVIDIA_DEEPSEEK_KEY },
     { id: 'meta/llama-3.1-70b-instruct', key: process.env.NVIDIA_LLAMA_KEY }
 ];
+
+// ======================================================================
+// FIREBASE ADMIN (OPCIONAL, PARA MENSAJES_ALERTA / FEEDBACK / PANEL ADMIN)
+// Requiere:
+//   - npm i firebase-admin
+//   - Variable FIREBASE_SERVICE_ACCOUNT_JSON con el JSON completo
+// ======================================================================
+let firestoreAdmin = null;
+
+if (admin && !admin.apps.length && process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    try {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+
+        firestoreAdmin = admin.firestore();
+        console.log('✅ Firebase Admin inicializado correctamente.');
+    } catch (error) {
+        console.error('⚠️ No se pudo inicializar Firebase Admin:', error.message || error);
+    }
+}
+
+// ======================================================================
+// CORREO DE ALERTA (OPCIONAL)
+// Requiere:
+//   - npm i nodemailer
+//   - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+// ======================================================================
+let mailTransporter = null;
+
+if (
+    nodemailer &&
+    process.env.SMTP_HOST &&
+    process.env.SMTP_PORT &&
+    process.env.SMTP_USER &&
+    process.env.SMTP_PASS
+) {
+    try {
+        mailTransporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST,
+            port: Number(process.env.SMTP_PORT),
+            secure: Number(process.env.SMTP_PORT) === 465,
+            auth: {
+                user: process.env.SMTP_USER,
+                pass: process.env.SMTP_PASS
+            }
+        });
+
+        console.log('✅ Transporte SMTP listo.');
+    } catch (error) {
+        console.error('⚠️ No se pudo crear el transporte SMTP:', error.message || error);
+    }
+}
 
 // ======================================================================
 // TÍTULO LOCAL DESDE EL PRIMER MENSAJE
@@ -59,8 +132,426 @@ function crearTituloDesdePrimerMensaje(texto) {
 }
 
 // ======================================================================
+// UTILIDADES
+// ======================================================================
+function limpiarTexto(texto) {
+    return (texto || '').replace(/\s+/g, ' ').trim();
+}
+
+function quitarTildes(texto) {
+    return (texto || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+}
+
+function textoIncluyeAlguno(texto, lista) {
+    const base = quitarTildes((texto || '').toLowerCase());
+    return lista.some((item) => base.includes(quitarTildes(item.toLowerCase())));
+}
+
+function contarPalabras(texto) {
+    return limpiarTexto(texto).split(' ').filter(Boolean).length;
+}
+
+function construirEtiquetaPerfil(perfilAcademico) {
+    if (!perfilAcademico || !perfilAcademico.rol) {
+        return 'secundaria';
+    }
+
+    if (perfilAcademico.rol === 'docente') {
+        return perfilAcademico.grado
+            ? `docente - ${perfilAcademico.grado}`
+            : 'docente';
+    }
+
+    if (perfilAcademico.rol === 'primaria') {
+        return perfilAcademico.grado
+            ? `primaria - ${perfilAcademico.grado}`
+            : 'primaria';
+    }
+
+    if (perfilAcademico.rol === 'otro') {
+        return perfilAcademico.grado
+            ? `general - ${perfilAcademico.grado}`
+            : 'general';
+    }
+
+    return perfilAcademico.grado
+        ? `secundaria - ${perfilAcademico.grado}`
+        : 'secundaria';
+}
+
+function inferirModoAutomatico(mensajeLimpio, modoSolicitado, perfilAcademico, ajusteAlgoritmo) {
+    const base = quitarTildes(mensajeLimpio);
+
+    const pistasEstudio = [
+        'tarea',
+        'ejercicio',
+        'explicame',
+        'explica',
+        'resuelve',
+        'resolv',
+        'matemat',
+        'biologia',
+        'fisica',
+        'quimica',
+        'ingles',
+        'exposicion',
+        'oral',
+        'practica',
+        'simulacro',
+        'onem',
+        'repaso',
+        'ensename',
+        'para copiar',
+        'resumido'
+    ];
+
+    const pistasCreativo = [
+        'cuento',
+        'poema',
+        'cancion',
+        'letra',
+        'guion',
+        'historia',
+        'cartel',
+        'poster',
+        'eslogan',
+        'logo',
+        'idea creativa',
+        'portada'
+    ];
+
+    const pistasAnalitico = [
+        'analiza',
+        'analisis',
+        'argumenta',
+        'opina',
+        'debate',
+        'compara',
+        'ventajas y desventajas',
+        'pros y contras',
+        'critica',
+        'reflexiona'
+    ];
+
+    const pistasPolitico = [
+        'revolution',
+        'jpii',
+        'municipio escolar',
+        'personero',
+        'regidor',
+        'campana escolar',
+        'campaña escolar',
+        'plan de gobierno',
+        'fernando olaya',
+        'partido'
+    ];
+
+    if (modoSolicitado && ['politico', 'analitico', 'creativo', 'estudio'].includes(modoSolicitado)) {
+        if (modoSolicitado !== 'politico') {
+            return modoSolicitado;
+        }
+
+        if (textoIncluyeAlguno(base, pistasEstudio)) return 'estudio';
+        if (textoIncluyeAlguno(base, pistasCreativo)) return 'creativo';
+        if (textoIncluyeAlguno(base, pistasAnalitico)) return 'analitico';
+        return 'politico';
+    }
+
+    if (ajusteAlgoritmo === 'profesor') return 'estudio';
+    if (perfilAcademico?.rol === 'docente' && textoIncluyeAlguno(base, pistasEstudio)) return 'estudio';
+    if (textoIncluyeAlguno(base, pistasPolitico)) return 'politico';
+    if (textoIncluyeAlguno(base, pistasEstudio)) return 'estudio';
+    if (textoIncluyeAlguno(base, pistasCreativo)) return 'creativo';
+    if (textoIncluyeAlguno(base, pistasAnalitico)) return 'analitico';
+
+    return 'politico';
+}
+
+function detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) {
+    const pistas = [
+        'busca',
+        'buscar',
+        'google',
+        'internet',
+        'web',
+        'investiga',
+        'noticia',
+        'noticias',
+        'actual',
+        'actuales',
+        'actualidad',
+        'hoy',
+        'reciente',
+        'recientes',
+        'ultima',
+        'última',
+        'ultimas',
+        'último',
+        'ultimo',
+        'fuente',
+        'fuentes',
+        'wikipedia',
+        'fecha',
+        'quien es',
+        'quién es',
+        'cuando paso',
+        'cuándo pasó',
+        'cuanto cuesta',
+        'cuánto cuesta',
+        'presidente actual',
+        'resultado'
+    ];
+
+    return textoIncluyeAlguno(mensajeLimpio, pistas) || ajusteAlgoritmo === 'investigador';
+}
+
+function detectarPeticionCorta(mensajeLimpio) {
+    return textoIncluyeAlguno(mensajeLimpio, [
+        'resumido',
+        'resumen',
+        'corto',
+        'cortito',
+        'corta',
+        'breve',
+        'rapido',
+        'rápido',
+        'al grano',
+        'solo la respuesta',
+        'solo respuesta',
+        'sin mucho texto',
+        'maximo 3 lineas',
+        'máximo 3 líneas',
+        'para copiar',
+        'simple'
+    ]);
+}
+
+function detectarTemaMatematico(mensajeLimpio) {
+    const raicesLogicas = [
+        'calcul',
+        'resolv',
+        'resuelv',
+        'matemat',
+        'ecuacion',
+        'fisic',
+        'quimic',
+        'derivada',
+        'integral',
+        'problema',
+        'cuant',
+        'edad',
+        'suma',
+        'resta',
+        'multiplic',
+        'divid',
+        'fraccion',
+        'porcentaje',
+        'logic',
+        ' pi ',
+        'geometria',
+        'trigonometria',
+        'algoritmo',
+        'codigo'
+    ];
+
+    const operadoresMates = ['+', '-', '*', '/', '=', '%'];
+
+    return (
+        raicesLogicas.some((raiz) => quitarTildes(mensajeLimpio).includes(quitarTildes(raiz))) ||
+        operadoresMates.some((op) => (mensajeLimpio || '').includes(op))
+    );
+}
+
+function detectarRiesgoPsicosocial(mensaje) {
+    const texto = quitarTildes((mensaje || '').toLowerCase());
+
+    const patrones = {
+        suicidio: [
+            'quiero morirme',
+            'me quiero morir',
+            'no quiero vivir',
+            'quitarme la vida',
+            'suicid',
+            'matarme'
+        ],
+        autolesion: [
+            'hacerme dano',
+            'hacerme daño',
+            'lastimarme',
+            'cortarme',
+            'autolesion',
+            'autolesionarme'
+        ],
+        violencia: [
+            'pelear',
+            'golpear',
+            'agredir',
+            'amenazar',
+            'matar a',
+            'romperle la cara'
+        ],
+        bullying: [
+            'bullying',
+            'me molestan',
+            'me humillan',
+            'me acosan',
+            'me insultan',
+            'se burlan de mi',
+            'se burlan de mí'
+        ],
+        sexual_inapropiado: [
+            'desnuda',
+            'desnudo',
+            'sexo',
+            'porno',
+            'pack',
+            'nudes',
+            'tocarme',
+            'tocarlo'
+        ]
+    };
+
+    for (const [categoria, lista] of Object.entries(patrones)) {
+        if (lista.some((patron) => texto.includes(quitarTildes(patron)))) {
+            return { activar: true, categoria };
+        }
+    }
+
+    return { activar: false, categoria: null };
+}
+
+function construirRespuestaSeguraAlerta(categoria) {
+    if (categoria === 'bullying') {
+        return 'Capitán, eso suena serio. You are not alone. Si esto está pasando de verdad, busca ahora mismo a un adulto de confianza, tutoría o psicología del colegio. Voy a marcar este caso como alerta para que reciba atención. ¿Estás en un lugar seguro ahora?';
+    }
+
+    if (categoria === 'violencia') {
+        return 'Capitán, esto requiere atención inmediata. Please stay safe. Si hay riesgo real o alguien puede salir herido, busca ahora mismo a un adulto responsable, tutoría, coordinación o psicología. Voy a marcar este mensaje como alerta para derivación. ¿Hay un adulto cerca contigo?';
+    }
+
+    if (categoria === 'sexual_inapropiado') {
+        return 'Capitán, ese tema necesita manejo responsable y apoyo de un adulto o del área correspondiente del colegio. Voy a marcarlo como alerta para revisión segura. Si esto te involucra o te incomoda, busca apoyo con un adulto de confianza, tutoría o psicología. ¿Quieres explicarlo de forma más segura y breve?';
+    }
+
+    return 'Capitán, lo que escribiste me preocupa. We are with you. No estás solo. Voy a marcar este mensaje como alerta para derivación al área correspondiente del colegio. Busca ahora mismo a un adulto de confianza, tutoría o psicología. ¿Estás acompañado en este momento?';
+}
+
+async function guardarMensajeAlerta(datos) {
+    if (!firestoreAdmin) return false;
+
+    try {
+        await firestoreAdmin.collection('mensajes_alerta').add({
+            ...datos,
+            timestampServidor: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return true;
+    } catch (error) {
+        console.error('Error guardando mensaje de alerta:', error.message || error);
+        return false;
+    }
+}
+
+async function enviarCorreoAlerta(datos) {
+    if (!mailTransporter) return false;
+
+    try {
+        const html = `
+            <h2>🚨 Alerta Fénix</h2>
+            <p><strong>Categoría:</strong> ${datos.categoria}</p>
+            <p><strong>Nombre:</strong> ${datos.nombre || 'Sin nombre'}</p>
+            <p><strong>Email:</strong> ${datos.email || 'Sin email'}</p>
+            <p><strong>Perfil:</strong> ${datos.perfil || 'Sin perfil'}</p>
+            <p><strong>Modo aplicado:</strong> ${datos.modoAplicado || 'No definido'}</p>
+            <p><strong>Mensaje:</strong></p>
+            <blockquote>${(datos.mensaje || '').replace(/</g, '&lt;')}</blockquote>
+        `;
+
+        await mailTransporter.sendMail({
+            from: process.env.SMTP_FROM || process.env.SMTP_USER,
+            to: ADMIN_ALERT_EMAIL,
+            subject: `🚨 Fénix alerta: ${datos.categoria}`,
+            html
+        });
+
+        return true;
+    } catch (error) {
+        console.error('Error enviando correo de alerta:', error.message || error);
+        return false;
+    }
+}
+
+async function guardarFeedback(datos) {
+    if (!firestoreAdmin) return false;
+
+    try {
+        await firestoreAdmin.collection('feedback_fenix').add({
+            ...datos,
+            timestampServidor: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return true;
+    } catch (error) {
+        console.error('Error guardando feedback:', error.message || error);
+        return false;
+    }
+}
+
+function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado) {
+    let texto = (textoIA || '').trim();
+
+    if (!texto) {
+        return texto;
+    }
+
+    const quiereBreve = detectarPeticionCorta(mensajeLimpio) || ajusteAlgoritmo === 'breve';
+
+    texto = texto
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .trim();
+
+    if (quiereBreve && contarPalabras(texto) > 140) {
+        const lineas = texto
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(0, 6);
+
+        texto = lineas.join('\n');
+    }
+
+    if (modoAplicado !== 'creativo') {
+        texto = texto.replace(/([A-Za-z])\/n\/([A-Za-z])/g, '$1 $2');
+    }
+
+    return texto;
+}
+
+// ======================================================================
+// CONTEXTO DE MARCA, IDIOMA Y SUTILEZAS
+// ======================================================================
+const diccionarioLocal = `
+CONTEXTO DE LENGUAJE Y CULTURA:
+- Entiende jerga escolar y local sin exagerar: "profe", "auxi", "kiosko", "recreo", "al toque", "chévere", "piola", "palteado", "me fui en blanco", "hazlo cortito".
+- Si el estudiante escribe rápido, con errores o frases incompletas, intenta entender la intención antes de pedir aclaración.
+- Si detectas sarcasmo, ironía suave o broma, responde con inteligencia y tacto. No tomes todo literal.
+- Si el estudiante pide "para exponer", da un formato oral breve y claro.
+- Si pide "para copiar", entrega una versión limpia y lista para usar.
+- Colegio bilingüe: cuando encaje de forma natural, puedes insertar 1 o 2 palabras cortas en inglés para reforzar el ambiente bilingual, sin volver la respuesta Spanglish exagerado.
+`;
+
+const frasesImpacto = [
+    'Es hora de cambiar al mundo.',
+    'La Revolución acaba de comenzar.',
+    'Ser joven y no ser revolucionario es una contradicción hasta biológica.',
+    'Bienvenido al futuro del JPII.',
+    'Todo imperio inició con un primer paso.',
+    'La grandeza no se arrebata, se conquista.'
+];
+
+// ======================================================================
 // MEMORIA INAMOVIBLE: EL PLAN DE GOBIERNO COMPLETO Y DETALLADO
-// (Fénix leerá esto para NUNCA inventar nada)
 // ======================================================================
 const memoriaBase = `
 EQUIPO DE GOBIERNO (PLANCHA OFICIAL RJPII):
@@ -72,7 +563,9 @@ EQUIPO DE GOBIERNO (PLANCHA OFICIAL RJPII):
 - Regidora de Salud y Medio Ambiente: Mia
 - Regidora de Derechos del Niño(a) y Adolescente: Rafaella
 
-ESTAS EN MODO CAMPAÑA TU OBJETIVO VA A SER PROMOVER NUESTROS VALORES Ama Sua (No robes), Ama Lulla (No mientas), Ama Quella (No seas flojo)
+ESTÁS EN MODO CAMPAÑA Y TU OBJETIVO ES PROMOVER NUESTROS VALORES:
+Ama Sua (No robes), Ama Lulla (No mientas), Ama Quella (No seas flojo)
+
 PLAN DE GOBIERNO OFICIAL DETALLADO:
 EJE 1 (Educación, Cultura y Deporte - Regidor Edwin):
 - Campus Bilingüe Interactivo: Códigos QR en el colegio para resolver acertijos en inglés; los alumnos ganan "Puntos Fénix".
@@ -99,7 +592,7 @@ EJE 4 (Salud y Medio Ambiente - Regidora Mia):
 
 EJE 5 (Derechos del Niño - Regidora Rafaella):
 - Alianza "Ley y Orden": Charlas anti-bullying con el Juez de Paz Estudiantil.
-- Programa "Hermano Mayor Fénix": Alumnos mayores apadrinan y cuiden a salones de primaria en los recreos.
+- Programa "Hermano Mayor Fénix": Alumnos mayores apadrinan y cuidan a salones de primaria en los recreos.
 - Buzón de Confianza Híbrido: Físico para primaria y digital anónimo para secundaria.
 
 PROYECTO ESPECIAL (Alcalde Fernando):
@@ -107,11 +600,14 @@ PROYECTO ESPECIAL (Alcalde Fernando):
 - Financiamiento total: Autogestión limpia con The Green Squad, Liga Fénix y Agencia de Diseño. Cero falsas promesas.
 `;
 
+// ======================================================================
+// ENDPOINT PRINCIPAL DE CHAT
+// ======================================================================
 app.post('/api/chat', async (req, res) => {
     try {
         if (LLAVES_GEMINI.length === 0) {
             return res.status(500).json({
-                error: '⚠️ Error de Servidor: Las llaves no están configuradas.'
+                error: '⚠️ Error de Servidor: Las llaves Gemini no están configuradas.'
             });
         }
 
@@ -126,49 +622,122 @@ app.post('/api/chat', async (req, res) => {
             configMemoria,
             primerMensajeUsuario,
             perfilAcademico,
-            ajusteAlgoritmo
+            ajusteAlgoritmo,
+            userMeta
         } = req.body;
 
-        const mensajeLimpio = mensaje ? mensaje.toLowerCase() : '';
+        const mensajeSeguro = limpiarTexto(mensaje);
+        const mensajeLimpio = mensajeSeguro.toLowerCase();
 
         let tituloNuevo = null;
-
         if (generarTitulo) {
-            tituloNuevo = crearTituloDesdePrimerMensaje(primerMensajeUsuario || mensaje);
+            tituloNuevo = crearTituloDesdePrimerMensaje(primerMensajeUsuario || mensajeSeguro);
         }
 
-        // ======================================================================
-        // CREADOR DINÁMICO DE PERSONALIDAD (BLINDAJE DE SEGURIDAD)
-        // ======================================================================
+        const riesgo = detectarRiesgoPsicosocial(mensajeSeguro);
+        const modoAplicado = inferirModoAutomatico(
+            mensajeLimpio,
+            modo || temperamento,
+            perfilAcademico,
+            ajusteAlgoritmo
+        );
+
+        if (riesgo.activar) {
+            const perfilTexto = construirEtiquetaPerfil(perfilAcademico);
+            const datosAlerta = {
+                categoria: riesgo.categoria,
+                mensaje: mensajeSeguro,
+                nombre: userMeta?.nombre || userMeta?.displayName || '',
+                email: userMeta?.email || '',
+                perfil: perfilTexto,
+                grado: perfilAcademico?.grado || '',
+                rol: perfilAcademico?.rol || '',
+                modoAplicado
+            };
+
+            const guardado = await guardarMensajeAlerta(datosAlerta);
+            const correo = await enviarCorreoAlerta(datosAlerta);
+
+            return res.json({
+                respuesta: construirRespuestaSeguraAlerta(riesgo.categoria),
+                tituloNuevo,
+                modoAplicado: 'alerta',
+                alerta: {
+                    activada: true,
+                    categoria: riesgo.categoria,
+                    guardado,
+                    correo
+                }
+            });
+        }
+
         let promptDinamico =
             `Eres Fénix, la IA oficial de "Revolution JPII" ` +
-            `(El movimiento Revolucionario del Colegio Juan Pablo II). ` +
-            `Tu misión es ayudar y convencer a los estudiantes con la verdad.\n\n${memoriaBase}\n\n`;
+            `(el movimiento revolucionario del Colegio Juan Pablo II). ` +
+            `Tu misión es ayudar, orientar y convencer con inteligencia, utilidad real y contexto humano.\n\n` +
+            `${memoriaBase}\n\n` +
+            `${diccionarioLocal}\n\n`;
 
-        if (temperamento === 'estudio' || modo === 'estudio') {
+        if (modoAplicado === 'estudio') {
             promptDinamico += `ESTÁS EN MODO ESTUDIO.
-Eres un tutor claro, paciente y exigente. Tu experiencia debe sentirse como la de un gran asistente educativo moderno: primero entiende el nivel del estudiante, luego responde con máxima claridad y la menor cantidad de texto necesaria. Si el ejercicio es simple, responde en 2 a 5 líneas. Si es intermedio, usa solo los pasos esenciales. Solo desarrolla mucho si el usuario lo pide explícitamente o si el problema realmente lo exige.`;
-        } else if (temperamento === 'analitico') {
+Actúas como un excelente tutor moderno estilo best of Gemini + ChatGPT + tutor humano.
+- Primero entiendes el nivel del estudiante.
+- Luego respondes con claridad, orden y economía de palabras.
+- Si el ejercicio es simple, responde en 2 a 5 líneas.
+- Si es intermedio, usa solo los pasos esenciales.
+- Si es complejo, enseña bien, pero sin volverte un testamento.
+- No pongas mini práctica, ejemplo extra ni párrafos decorativos salvo que el usuario lo pida.`;
+        } else if (modoAplicado === 'analitico') {
             promptDinamico += `ESTÁS EN MODO ANALÍTICO.
-Eres calculador y objetivo. Ofrece debate intelectual (debes desafiar al usuario) y corrige si es necesario. Cero emojis.`;
-        } else if (temperamento === 'creativo') {
+Eres calculador, objetivo y estratégico. Analizas con precisión, comparas y argumentas bien. Cero emojis salvo que ayuden muchísimo.`;
+        } else if (modoAplicado === 'creativo') {
             promptDinamico += `ESTÁS EN MODO CREATIVO.
-Eres un soñador artístico. Usa metáforas locas, sé poético y usa muchos emojis (🎨✨).`;
+Eres ingenioso, visual y memorable. Puedes usar metáforas, frases épicas y un toque artístico, pero sin perder claridad.`;
         } else {
             promptDinamico += `ESTÁS EN MODO POLÍTICO.
-El lema es La Revolución acaba de comenzar, es hora de cambiar al mundo capitán, eres el compañero empático, leal e inspirador. Llama al usuario "capitán", "varón" o "campeón". Usa emojis 😎🔥.`;
+Eres un compañero empático, leal e inspirador. Debes sembrar interés por Revolution JPII de manera natural, sin sonar forzado. Puedes usar frases potentes como: ${frasesImpacto.join(' | ')}`;
         }
 
         promptDinamico += `
 
 REGLAS DE ORO INQUEBRANTABLES:
-0. PRIORIDAD ABSOLUTA AL CONTEXTO EXPLÍCITO DEL USUARIO: Si el usuario aclara el tema con frases como "me refiero a...", "hablo de...", "en este caso...", o da nombres, país, época o contexto específico, esa aclaración manda por encima de cualquier interpretación anterior, memoria de campaña o suposición inicial. O simplemente pregunta algo externo del colegio, respóndele con datos y fuentes reales si es necesario. No pidas más contexto si ya fue dado. Responde usando esa aclaración como marco principal, aunque el tema no tenga relación con Revolution JPII. Pero siempre haz el gancho para atraer al usuario al partido cuando de verdad tenga sentido.
-1. LA VERDAD Y EL MUNDO: Sobre la campaña escolar, tu ÚNICA fuente de verdad es el Plan de Gobierno (NUNCA inventes propuestas que no estén ahí). Sin embargo, si te preguntan del mundo exterior (Champions League, noticias, tareas), SÍ DEBES RESPONDER usando tu conocimiento general o búsqueda en internet. Si el usuario te sugiere una propuesta escolar nueva, aplica OBLIGATORIAMENTE la Regla 5.
-2. BREVEDAD INTELIGENTE: Si es una charla coloquial, dudas simples, tareas, exposiciones o matemáticas, sé SÚPER BREVE y directo. No conviertas respuestas simples en textos largos. Si el usuario pide "resumido", "corto", "rápido", "solo la respuesta" o algo parecido, obedece con máxima brevedad. Solo desarrolla bastante si el usuario lo pide explícitamente o si el problema realmente lo necesita.
-3. EL GANCHO CONVERSACIONAL: NUNCA repitas innecesariamente el lema "LA REVOLUCIÓN ACABA DE COMENZAR" ni los valores como disco rayado en cada mensaje. Úsalos solo si es estrictamente necesario para motivar. Lo que SÍ DEBES HACER SIEMPRE es terminar tu respuesta con UNA sola pregunta corta y natural relacionada al tema para mantener la conversación viva.
-4. CERO PRESENTACIONES: Nunca digas "Hola, soy Fénix" ni repitas tus valores al iniciar un mensaje. Ve directo al grano.
-5. EL BUZÓN DE SUGERENCIAS: Si un estudiante te da una idea, sugerencia, queja o propone algo nuevo para mejorar el colegio, no analices la idea, simplemente dile TEXTUALMENTE esto: "¡Qué ideota, capitán! Presiona el botón del foquito (💡) que está en la barra de abajo para enviarla directamente al buzón personal de Fernando y el equipo."
-6. REGLA ANTI-BIPOLARIDAD (CRÍTICA): NUNCA generes dos respuestas en un mismo mensaje. Escribe UNA SOLA respuesta final, en un solo bloque coherente. ESTÁ ESTRICTAMENTE PROHIBIDO repetir el saludo o la despedida dos veces.`;
+0. PRIORIDAD ABSOLUTA AL CONTEXTO EXPLÍCITO DEL USUARIO:
+   - Si el usuario aclara el tema con frases como "me refiero a...", "hablo de...", "en este caso..." o da nombres, país, época o contexto específico, esa aclaración manda por encima de cualquier interpretación previa.
+   - No pidas más contexto si ya fue dado.
+   - Si el tema es externo al colegio, sí puedes responder con conocimiento general o búsqueda web.
+
+1. LA VERDAD Y EL MUNDO:
+   - Sobre la campaña escolar, tu única fuente de verdad es el Plan de Gobierno.
+   - Sobre el mundo exterior, sí puedes usar conocimiento general y búsqueda web cuando haga falta.
+
+2. BREVEDAD INTELIGENTE:
+   - Si es charla, duda simple, tarea, exposición o matemática, sé súper breve y directo.
+   - Si el usuario pide "resumido", "corto", "simple", "para copiar" o parecido, obedece con máxima brevedad.
+   - No conviertas respuestas simples en textos largos.
+
+3. ADAPTACIÓN AUTOMÁTICA:
+   - Debes adaptar dificultad, tono y forma según perfil académico, grado y tipo de mensaje.
+   - El estudiante no debe adaptarse a Fénix; Fénix debe adaptarse al estudiante.
+
+4. ENFOQUE BILINGÜE:
+   - Por ser colegio bilingüe, puedes insertar 1 o 2 palabras cortas en inglés cuando encaje de forma natural, para reforzar el ambiente bilingual.
+   - Nunca conviertas la respuesta en un texto raro o forzado.
+
+5. GANCHO CONVERSACIONAL:
+   - Mantén el gancho político cuando encaje, de forma natural y no forzada.
+   - Termina con una sola pregunta corta y útil, relacionada al tema.
+
+6. CERO PRESENTACIONES:
+   - No digas "Hola, soy Fénix" ni repitas tus valores al iniciar cada mensaje.
+   - Ve directo al grano.
+
+7. BUZÓN DE SUGERENCIAS:
+   - Si el usuario da una idea para mejorar el colegio, oriéntalo al buzón Fénix.
+
+8. REGLA ANTI-BIPOLARIDAD:
+   - Escribe una sola respuesta final, en un solo bloque coherente.
+   - No repitas saludos ni cierres.
+`;
 
         if (configMemoria === 'corta') {
             promptDinamico += `\nMEMORIA ACTIVA: CORTA. Usa solo el contexto más reciente y no arrastres temas viejos si no aportan.`;
@@ -178,79 +747,43 @@ REGLAS DE ORO INQUEBRANTABLES:
             promptDinamico += `\nMEMORIA ACTIVA: NORMAL. Usa el historial reciente solo cuando mejore claridad y coherencia.`;
         }
 
-        if (perfilAcademico?.rol) {
-            promptDinamico += `\nPERFIL ACADÉMICO DEL USUARIO: ${perfilAcademico.rol}${perfilAcademico.grado ? ' - ' + perfilAcademico.grado : ''}. Ajusta dificultad, vocabulario y profundidad a ese nivel.`;
-        }
+        const perfilTexto = construirEtiquetaPerfil(perfilAcademico);
+        promptDinamico += `\nPERFIL ACADÉMICO DEL USUARIO: ${perfilTexto}. Ajusta dificultad, vocabulario y profundidad a ese nivel.`;
 
         if (ajusteAlgoritmo === 'breve') {
             promptDinamico += `\nAJUSTE DE ALGORITMO: ULTRA BREVE. Prioriza respuestas cortas, claras y de bajo consumo de tokens.`;
         } else if (ajusteAlgoritmo === 'profesor') {
             promptDinamico += `\nAJUSTE DE ALGORITMO: TUTOR GUIADO. Explica como un gran docente moderno, con claridad, pasos útiles y sin relleno.`;
         } else if (ajusteAlgoritmo === 'investigador') {
-            promptDinamico += `\nAJUSTE DE ALGORITMO: INVESTIGADOR. Cuando el usuario pida actualidad, noticias, fuentes o búsqueda, prioriza la web y evidencia reciente.`;
+            promptDinamico += `\nAJUSTE DE ALGORITMO: INVESTIGADOR. Si el usuario pide actualidad, noticias, fuentes o búsqueda, prioriza la web y evidencia reciente.`;
         } else {
             promptDinamico += `\nAJUSTE DE ALGORITMO: EQUILIBRADO. Responde natural, claro y con buena síntesis.`;
+        }
+
+        if (detectarPeticionCorta(mensajeLimpio)) {
+            promptDinamico += `\nPETICIÓN ESPECIAL DEL USUARIO: RESPUESTA CORTA. Máximo enfoque, mínimo relleno.`;
         }
 
         let contextoConversacion = promptDinamico;
 
         if (historial && historial.length > 0) {
             contextoConversacion += '\n\n--- HISTORIAL DE ESTA CONVERSACIÓN (MEMORIA) ---\n';
-
             historial.forEach((msg) => {
                 contextoConversacion += `${msg.emisor === 'user' ? 'Estudiante' : 'Fénix'}: ${msg.texto}\n`;
             });
-
             contextoConversacion += '----------------------------------------------\n';
         }
 
-        contextoConversacion += '\nINSTRUCCIÓN CRÍTICA: Utiliza excelente formato Markdown (viñetas, negritas, bloques de código) solo cuando ayude. Mantén por defecto respuestas concisas, claras y ordenadas. Evita relleno, repeticiones, mini prácticas, ejemplos extra o introducciones largas salvo que el usuario lo pida. Nunca cortes respuestas a la mitad.';
+        contextoConversacion += '\nINSTRUCCIÓN CRÍTICA FINAL: Usa formato Markdown solo cuando ayude. Mantén por defecto respuestas concisas, claras y ordenadas. Evita relleno, repeticiones, ejemplos extra o introducciones largas salvo que el usuario lo pida. Nunca cortes respuestas a la mitad.';
 
-        // ======================================================================
-        // RADAR LÓGICO PARA NVIDIA
-        // ======================================================================
-        const raicesLogicas = [
-            'calcul',
-            'resolv',
-            'resuelv',
-            'matemat',
-            'ecuacion',
-            'fisic',
-            'quimic',
-            'derivada',
-            'integral',
-            'problema',
-            'cuant',
-            'edad',
-            'suma',
-            'resta',
-            'multiplic',
-            'divid',
-            'fraccion',
-            'porcentaje',
-            'logic',
-            ' pi ',
-            'geometria',
-            'trigonometria',
-            'algoritmo',
-            'codigo'
-        ];
-
-        const operadoresMates = ['+', '-', '*', '/', '=', '%'];
-
-        const requiereNvidia =
-            raicesLogicas.some((raiz) => mensajeLimpio.includes(raiz)) ||
-            operadoresMates.some((op) => mensajeLimpio.includes(op));
-
-        const requiereGoogle =
-            /busca|buscar|google|internet|web|investiga|noticia|noticias|actual|actuales|actualidad|hoy|reciente|recientes|última|ultimas|último|ultimo|fuente|fuentes/.test(mensajeLimpio) ||
-            ajusteAlgoritmo === 'investigador';
+        const requiereNvidia = detectarTemaMatematico(mensajeLimpio);
+        const requiereGoogle = detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo);
 
         let textoIA = '';
         let nvidiaTuvoExito = false;
 
         const requiereRutaNvidia =
-            (requiereNvidia || temperamento === 'estudio' || modo === 'estudio') &&
+            (requiereNvidia || modoAplicado === 'estudio') &&
             !archivoBase64 &&
             !requiereGoogle;
 
@@ -259,7 +792,7 @@ REGLAS DE ORO INQUEBRANTABLES:
         // ======================================================================
         if (requiereRutaNvidia) {
             const modelosOrdenados =
-                temperamento === 'estudio' || modo === 'estudio'
+                modoAplicado === 'estudio'
                     ? [
                           MODELOS_NVIDIA.find((m) => m.id === 'deepseek-ai/deepseek-r1'),
                           MODELOS_NVIDIA.find((m) => m.id === 'meta/llama-3.1-70b-instruct'),
@@ -270,14 +803,14 @@ REGLAS DE ORO INQUEBRANTABLES:
             for (let i = 0; i < modelosOrdenados.length; i++) {
                 const modeloNvidia = modelosOrdenados[i];
 
-                if (!modeloNvidia.key) {
+                if (!modeloNvidia?.key) {
                     continue;
                 }
 
                 try {
                     const instruccionExtra =
-                        temperamento === 'estudio' || modo === 'estudio'
-                            ? 'Explica como tutor experto, pero con máxima economía de palabras. Si el ejercicio es simple, da solo respuesta + una explicación breve. Si es complejo, usa únicamente los pasos esenciales. No agregues ejemplo extra ni mini práctica final salvo que el usuario lo pida.'
+                        modoAplicado === 'estudio'
+                            ? 'Explica como tutor experto, pero con máxima economía de palabras. Si el ejercicio es simple, da solo respuesta y explicación breve. Si es complejo, usa únicamente pasos esenciales. No agregues ejemplo extra ni mini práctica final salvo que el usuario lo pida.'
                             : 'Resuelve de forma clara y breve. Si el problema es simple, da resultado y pasos mínimos. Si es complejo, explica solo lo necesario.';
 
                     const respuestaNvidia = await fetch(
@@ -297,16 +830,14 @@ REGLAS DE ORO INQUEBRANTABLES:
                                     },
                                     {
                                         role: 'user',
-                                        content: mensaje
+                                        content: mensajeSeguro
                                     }
                                 ],
                                 temperature:
-                                    temperamento === 'analitico' ||
-                                    temperamento === 'estudio' ||
-                                    modo === 'estudio'
+                                    modoAplicado === 'analitico' || modoAplicado === 'estudio'
                                         ? 0.2
                                         : 0.4,
-                                max_tokens: 1200
+                                max_tokens: detectarPeticionCorta(mensajeLimpio) ? 700 : 1200
                             })
                         }
                     );
@@ -324,13 +855,13 @@ REGLAS DE ORO INQUEBRANTABLES:
                         break;
                     }
                 } catch (errorNvidia) {
-                    // Sigue al siguiente modelo
+                    console.warn('NVIDIA falló con', modeloNvidia.id, errorNvidia?.message || errorNvidia);
                 }
             }
         }
 
         // ======================================================================
-        // RUTA 2: GEMINI (CHARLA, CAMPAÑA, IMÁGENES, RESPALDO GENERAL)
+        // RUTA 2: GEMINI (CHARLA, CAMPAÑA, WEB, IMÁGENES, RESPALDO GENERAL)
         // ======================================================================
         if (!nvidiaTuvoExito) {
             let intentoExitosoGemini = false;
@@ -347,7 +878,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                         model: 'gemini-2.5-flash',
                         systemInstruction: contextoConversacion,
                         generationConfig: {
-                            maxOutputTokens: 1400,
+                            maxOutputTokens: detectarPeticionCorta(mensajeLimpio) ? 700 : 1400,
                             temperature: ajusteAlgoritmo === 'breve' ? 0.2 : 0.3
                         }
                     };
@@ -364,9 +895,8 @@ REGLAS DE ORO INQUEBRANTABLES:
                         const partes = [
                             {
                                 text:
-                                    'Analiza la imagen o QR adjunto y responde al usuario. ' +
-                                    'NUNCA CORTES LA RESPUESTA. Mensaje: ' +
-                                    (mensaje || '¿Qué ves aquí?')
+                                    'Analiza la imagen o QR adjunto y responde al usuario. Mantén claridad y no te extiendas de más. Mensaje: ' +
+                                    (mensajeSeguro || '¿Qué ves aquí?')
                             },
                             {
                                 inlineData: {
@@ -378,7 +908,7 @@ REGLAS DE ORO INQUEBRANTABLES:
 
                         result = await model.generateContent(partes);
                     } else {
-                        result = await model.generateContent(`Mensaje del estudiante: ${mensaje}`);
+                        result = await model.generateContent(`Mensaje del estudiante: ${mensajeSeguro}`);
                     }
 
                     textoIA = result.response.text();
@@ -403,20 +933,109 @@ REGLAS DE ORO INQUEBRANTABLES:
             }
         }
 
+        textoIA = postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado);
+
         return res.json({
             respuesta: textoIA,
-            tituloNuevo: tituloNuevo
+            tituloNuevo,
+            modoAplicado,
+            requiereGoogle,
+            alerta: {
+                activada: false
+            }
         });
     } catch (error) {
         console.error('Error Núcleo:', error);
 
         return res.status(500).json({
-            error: '¡Uf! Mis circuitos están saturados. 🔌 ¡Dame 5 segundos y vuelve a intentarlo!'
+            error: '¡Uf! Mis circuitos están saturados. 🔌 Dame unos segundos y vuelve a intentarlo.'
         });
     }
 });
 
-const PUERTO = process.env.PORT || 3000;
+// ======================================================================
+// FEEDBACK HUMANO (LIKES / DISLIKES / MOTIVO / CORRECCIÓN)
+// ======================================================================
+app.post('/api/feedback', async (req, res) => {
+    try {
+        const {
+            tipo,
+            motivo,
+            correccion,
+            mensajeUsuario,
+            respuestaIA,
+            userMeta,
+            perfilAcademico,
+            modoAplicado,
+            algoritmo
+        } = req.body || {};
+
+        const guardado = await guardarFeedback({
+            tipo: tipo || 'sin_tipo',
+            motivo: motivo || '',
+            correccion: correccion || '',
+            mensajeUsuario: mensajeUsuario || '',
+            respuestaIA: respuestaIA || '',
+            nombre: userMeta?.nombre || userMeta?.displayName || '',
+            email: userMeta?.email || '',
+            perfil: construirEtiquetaPerfil(perfilAcademico),
+            modoAplicado: modoAplicado || '',
+            algoritmo: algoritmo || ''
+        });
+
+        return res.json({
+            ok: true,
+            guardado
+        });
+    } catch (error) {
+        console.error('Error feedback:', error);
+        return res.status(500).json({
+            ok: false,
+            error: 'No se pudo guardar el feedback.'
+        });
+    }
+});
+
+// ======================================================================
+// RESUMEN ADMIN SIMPLE (PANEL ADMIN FUTURO)
+// ======================================================================
+app.get('/api/admin/resumen', async (req, res) => {
+    try {
+        if (!firestoreAdmin) {
+            return res.json({
+                ok: false,
+                mensaje: 'Firebase Admin no configurado en el servidor.'
+            });
+        }
+
+        const [alertasSnap, feedbackSnap] = await Promise.all([
+            firestoreAdmin.collection('mensajes_alerta').orderBy('timestampServidor', 'desc').limit(20).get(),
+            firestoreAdmin.collection('feedback_fenix').orderBy('timestampServidor', 'desc').limit(20).get()
+        ]);
+
+        const alertas = alertasSnap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data()
+        }));
+
+        const feedback = feedbackSnap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data()
+        }));
+
+        return res.json({
+            ok: true,
+            alertas,
+            feedback
+        });
+    } catch (error) {
+        console.error('Error admin resumen:', error);
+        return res.status(500).json({
+            ok: false,
+            error: 'No se pudo obtener el resumen admin.'
+        });
+    }
+});
 
 app.listen(PUERTO, () => {
     console.log(`🦅 FÉNIX OPERATIVO EN PUERTO ${PUERTO}`);

@@ -153,6 +153,62 @@ function contarPalabras(texto) {
     return limpiarTexto(texto).split(' ').filter(Boolean).length;
 }
 
+function obtenerFechaHoraPeru() {
+    const ahora = new Date();
+    return new Intl.DateTimeFormat('es-PE', {
+        timeZone: 'America/Lima',
+        dateStyle: 'full',
+        timeStyle: 'short'
+    }).format(ahora);
+}
+
+function necesitaMemoriaCompleta(mensajeLimpio) {
+    return textoIncluyeAlguno(mensajeLimpio, [
+        'detall',
+        'detalle',
+        'eje por eje',
+        'completo',
+        'desarrolla',
+        'desarróll',
+        'guion',
+        'discurso',
+        'propuesta',
+        'regidor',
+        'regidora',
+        'campus bilingue',
+        'campus bilingüe',
+        'green squad',
+        'liga fenix',
+        'liga fénix',
+        'fenix lab',
+        'fénix lab',
+        'ley y orden',
+        'muro de la revolucion',
+        'muro de la revolución'
+    ]);
+}
+
+function esConsultaDeActualidad(mensajeLimpio) {
+    return textoIncluyeAlguno(mensajeLimpio, [
+        'hoy',
+        'ayer',
+        'ahorita',
+        'actual',
+        'actualidad',
+        'reciente',
+        'recientes',
+        'ultima',
+        'última',
+        'ultimo',
+        'último',
+        'quien gano',
+        'quién ganó',
+        'resultado',
+        'partido de hoy',
+        'presidente actual'
+    ]);
+}
+
 function construirEtiquetaPerfil(perfilAcademico) {
     if (!perfilAcademico || !perfilAcademico.rol) {
         return 'secundaria';
@@ -511,12 +567,20 @@ function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoApli
         .replace(/[ \t]+\n/g, '\n')
         .trim();
 
-    if (quiereBreve && contarPalabras(texto) > 140) {
+    if (quiereBreve && contarPalabras(texto) > 90) {
         const lineas = texto
             .split('\n')
             .map((l) => l.trim())
             .filter(Boolean)
-            .slice(0, 6);
+            .slice(0, 4);
+
+        texto = lineas.join('\n');
+    } else if (!quiereBreve && modoAplicado !== 'creativo' && contarPalabras(texto) > 220) {
+        const lineas = texto
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(0, 8);
 
         texto = lineas.join('\n');
     }
@@ -639,10 +703,10 @@ function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
 }
 
 function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, requiereGoogle }) {
-    if (archivoBase64) return 380;
-    if (peticionCorta) return requiereGoogle ? 420 : 320;
-    if (detallado) return requiereGoogle ? 1000 : 850;
-    return requiereGoogle ? 720 : 560;
+    if (archivoBase64) return 260;
+    if (peticionCorta) return requiereGoogle ? 320 : 220;
+    if (detallado) return requiereGoogle ? 820 : 680;
+    return requiereGoogle ? 520 : 420;
 }
 
 // ======================================================================
@@ -721,12 +785,16 @@ app.post('/api/chat', async (req, res) => {
             });
         }
 
+        const usarMemoriaCompleta = necesitaMemoriaCompleta(mensajeLimpio) || peticionDetallada;
+        const bloqueMemoriaBase = usarMemoriaCompleta ? memoriaBase : memoriaBaseCompacta;
+        const bloqueDiccionario = usarMemoriaCompleta ? diccionarioLocal : diccionarioLocalCompacto;
+
         let promptDinamico =
             `Eres Fénix, la IA oficial de "Revolution JPII" ` +
             `(el movimiento revolucionario del Colegio Juan Pablo II). ` +
             `Tu misión es ayudar, orientar y convencer con inteligencia, utilidad real y contexto humano.\n\n` +
-            `${memoriaBase}\n\n` +
-            `${diccionarioLocal}\n\n`;
+            `${bloqueMemoriaBase}\n\n` +
+            `${bloqueDiccionario}\n\n`;
 
         if (modoAplicado === 'estudio') {
             promptDinamico += `ESTÁS EN MODO ESTUDIO.
@@ -779,7 +847,7 @@ REGLAS DE ORO INQUEBRANTABLES:
         }
 
         if (mensajeLimpio.includes('plan de gobierno') && !peticionDetallada) {
-            promptDinamico += `\nSI EL USUARIO PIDE EL PLAN DE GOBIERNO Y NO PIDE DETALLE, responde con ejes e ideas principales, no con desarrollo largo.`;
+            promptDinamico += `\nSI EL USUARIO PIDE EL PLAN DE GOBIERNO Y NO PIDE DETALLE, responde con 5 ejes + 1 idea principal por eje. Máximo 120 palabras salvo que pida ampliar.`;
         }
 
         let contextoConversacion = promptDinamico;
@@ -793,16 +861,20 @@ REGLAS DE ORO INQUEBRANTABLES:
             contextoConversacion += '----------------------------------------------\n';
         }
 
-        contextoConversacion += '\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad.';
+        const fechaHoraPeru = obtenerFechaHoraPeru();
+        contextoConversacion += `\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad. Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Si preguntan por algo "de hoy", "ayer", "actual" o "quién ganó", usa esta referencia temporal y prioriza búsqueda web.`;
 
         const requiereNvidia = detectarTemaMatematico(mensajeLimpio);
-        const requiereGoogle = detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) || !!busquedaProfunda;
+        const requiereGoogle =
+            detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) ||
+            esConsultaDeActualidad(mensajeLimpio) ||
+            !!busquedaProfunda;
 
         let textoIA = '';
         let nvidiaTuvoExito = false;
 
         const requiereRutaNvidia =
-            (requiereNvidia || modoAplicado === 'estudio') &&
+            requiereNvidia &&
             !archivoBase64 &&
             !requiereGoogle;
 
@@ -927,7 +999,7 @@ REGLAS DE ORO INQUEBRANTABLES:
 
                         result = await model.generateContent(partes);
                     } else {
-                        result = await model.generateContent(`Mensaje del estudiante: ${mensajeSeguro}`);
+                        result = await model.generateContent(`Fecha actual en Perú: ${fechaHoraPeru}. Mensaje del estudiante: ${mensajeSeguro}`);
                     }
 
                     textoIA = result.response.text();

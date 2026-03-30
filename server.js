@@ -35,6 +35,7 @@ const LLAVES_GEMINI = geminiKeysString
 
 let indiceLlaveGemini = 0;
 const ESTADO_LLAVES_GEMINI = [];
+const CACHE_RESPUESTAS = new Map();
 
 const MODELOS_NVIDIA = [
     { id: 'qwen/qwen2.5-coder-32b-instruct', key: process.env.NVIDIA_QWEN_KEY },
@@ -171,6 +172,47 @@ function extraerRetryMs(error) {
     const m = texto.match(/retry in\s+(\d+(?:\.\d+)?)s/i) || texto.match(/retryDelay":"(\d+)s/i);
     if (!m) return 0;
     return Math.ceil(parseFloat(m[1]) * 1000);
+}
+
+function esCuotaDiariaGemini(error) {
+    const texto = (error?.message || error || '').toString();
+    return /perday|per day|rpd|GenerateRequestsPerDayPerModel|GenerateRequestsPerDayPerProjectPerModel/i.test(texto);
+}
+
+function msHastaMedianochePeru() {
+    const ahora = new Date();
+    const lima = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Lima' }));
+    const siguiente = new Date(lima);
+    siguiente.setHours(24, 0, 0, 0);
+    return Math.max(60 * 1000, siguiente.getTime() - lima.getTime() + 60 * 1000);
+}
+
+function crearClaveCache(datos) {
+    const partes = [
+        limpiarTexto(datos?.mensaje || '').toLowerCase(),
+        datos?.modoAplicado || '',
+        datos?.algoritmo || '',
+        datos?.perfil || '',
+        datos?.archivo ? 'archivo' : 'texto'
+    ];
+    return partes.join('||');
+}
+
+function obtenerCache(clave) {
+    const item = CACHE_RESPUESTAS.get(clave);
+    if (!item) return null;
+    if (Date.now() > item.expira) {
+        CACHE_RESPUESTAS.delete(clave);
+        return null;
+    }
+    return item.valor;
+}
+
+function guardarCache(clave, valor, ttlMs = 8 * 60 * 1000) {
+    CACHE_RESPUESTAS.set(clave, {
+        valor,
+        expira: Date.now() + ttlMs
+    });
 }
 
 function obtenerFechaHoraPeru() {
@@ -578,38 +620,52 @@ async function guardarFeedback(datos) {
 
 function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado) {
     let texto = (textoIA || '').trim();
-
-    if (!texto) {
-        return texto;
-    }
+    if (!texto) return texto;
 
     const quiereBreve = detectarPeticionCorta(mensajeLimpio) || ajusteAlgoritmo === 'breve';
+    const creativo = modoAplicado === 'creativo' || esTareaCreativa(mensajeLimpio);
 
     texto = texto
         .replace(/\n{3,}/g, '\n\n')
         .replace(/[ \t]+\n/g, '\n')
+        .replace(/([A-Za-z])\/n\/([A-Za-z])/g, '$1 $2')
         .trim();
 
-    if (quiereBreve && contarPalabras(texto) > 90) {
-        const lineas = texto
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(Boolean)
-            .slice(0, 4);
+    const tomarHastaPuntuacion = (base, maxPalabras) => {
+        const palabras = limpiarTexto(base).split(' ').filter(Boolean);
+        if (palabras.length <= maxPalabras) return base.trim();
 
-        texto = lineas.join('\n');
-    } else if (!quiereBreve && modoAplicado !== 'creativo' && contarPalabras(texto) > 220) {
-        const lineas = texto
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(Boolean)
-            .slice(0, 8);
+        const recorte = palabras.slice(0, maxPalabras + 15).join(' ');
+        const idx = Math.max(
+            recorte.lastIndexOf('. '),
+            recorte.lastIndexOf('! '),
+            recorte.lastIndexOf('? '),
+            recorte.lastIndexOf(': ')
+        );
 
-        texto = lineas.join('\n');
+        if (idx > 40) {
+            return recorte.slice(0, idx + 1).trim();
+        }
+
+        return palabras.slice(0, maxPalabras).join(' ').trim();
+    };
+
+    if (quiereBreve) {
+        texto = tomarHastaPuntuacion(texto, 85);
+    } else if (!creativo && contarPalabras(texto) > 210) {
+        texto = tomarHastaPuntuacion(texto, 180);
     }
 
-    if (modoAplicado !== 'creativo') {
-        texto = texto.replace(/([A-Za-z])\/n\/([A-Za-z])/g, '$1 $2');
+    if (!/[.!?…:]$/.test(texto) && contarPalabras(texto) > 12) {
+        const idx = Math.max(
+            texto.lastIndexOf('.'),
+            texto.lastIndexOf('!'),
+            texto.lastIndexOf('?'),
+            texto.lastIndexOf(':')
+        );
+        if (idx > 40) {
+            texto = texto.slice(0, idx + 1).trim();
+        }
     }
 
     return texto;
@@ -723,11 +779,94 @@ function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
     }));
 }
 
-function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, requiereGoogle }) {
-    if (archivoBase64) return 220;
-    if (peticionCorta) return requiereGoogle ? 240 : 170;
-    if (detallado) return requiereGoogle ? 680 : 560;
-    return requiereGoogle ? 360 : 280;
+function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, modoAplicado, esCreativeTask }) {
+    if (archivoBase64) return 360;
+    if (peticionCorta) return 220;
+    if (esCreativeTask || modoAplicado === 'creativo') return detallado ? 700 : 460;
+    if (modoAplicado === 'estudio') return detallado ? 780 : 420;
+    if (modoAplicado === 'analitico') return detallado ? 700 : 420;
+    return detallado ? 620 : 360;
+}
+
+function esTareaCreativa(mensajeLimpio) {
+    return textoIncluyeAlguno(mensajeLimpio, [
+        'historia',
+        'cuento',
+        'poema',
+        'guion',
+        'parrafo',
+        'párrafo',
+        'titulo',
+        'título',
+        'eslogan',
+        'cartel',
+        'parodia',
+        'cancion',
+        'canción',
+        'introduccion',
+        'introducción'
+    ]);
+}
+
+function seleccionarModelosNvidia(modoAplicado, mensajeLimpio) {
+    const esCodigoOEstructura = textoIncluyeAlguno(mensajeLimpio, [
+        'codigo', 'código', 'programa', 'script', 'json', 'html', 'css', 'flutter',
+        'clase', 'sesion', 'sesión', 'rubrica', 'rúbrica', 'estructura', 'formato'
+    ]);
+    const esMateORazonamiento = detectarTemaMatematico(mensajeLimpio) || textoIncluyeAlguno(mensajeLimpio, [
+        'razonamiento', 'geometria', 'geometría', 'algebra', 'álgebra', 'angulo', 'ángulo'
+    ]);
+
+    const porId = (id) => MODELOS_NVIDIA.find((m) => m.id === id);
+    const deepseek = porId('deepseek-ai/deepseek-r1');
+    const qwen = porId('qwen/qwen2.5-coder-32b-instruct');
+    const llama = porId('meta/llama-3.1-70b-instruct');
+
+    if (esMateORazonamiento || modoAplicado === 'estudio') {
+        return [deepseek, qwen, llama].filter(Boolean);
+    }
+
+    if (esCodigoOEstructura || modoAplicado === 'analitico') {
+        return [qwen, deepseek, llama].filter(Boolean);
+    }
+
+    if (modoAplicado === 'creativo' || modoAplicado === 'politico') {
+        return [llama, qwen, deepseek].filter(Boolean);
+    }
+
+    return [llama, deepseek, qwen].filter(Boolean);
+}
+
+function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetallada, esCreativeTask, mensajeLimpio }) {
+    const base = [];
+    base.push('Responde en español claro y natural.');
+    base.push('No cortes la respuesta a la mitad.');
+    base.push('No inventes datos externos ni resultados en tiempo real.');
+    base.push('Si el usuario pide algo de hoy, actual o con fuente y no tienes verificación web activa, dilo con honestidad.');
+
+    if (peticionCorta) {
+        base.push('El usuario pidió brevedad. Máximo enfoque, mínimo relleno.');
+    }
+
+    if (modoAplicado === 'estudio') {
+        base.push('Actúa como tutor moderno: si es simple, respuesta + explicación breve; si es complejo, solo pasos esenciales.');
+    } else if (modoAplicado === 'analitico') {
+        base.push('Analiza con precisión, estructura y lógica.');
+    } else if (modoAplicado === 'creativo') {
+        base.push('Sé memorable y creativo, pero mantén claridad y no te extiendas de más.');
+    } else {
+        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural.');
+    }
+
+    if (esCreativeTask) {
+        base.push('Si el usuario pide historia, cuento, título o párrafos, entrega el texto completo en una sola respuesta, sin dejar frases inconclusas.');
+    }
+
+    if (mensajeLimpio.includes('plan de gobierno') && !peticionDetallada) {
+        base.push('Si piden el plan de gobierno sin pedir detalle, da 5 ejes con 1 idea principal por eje.');
+    }
+
+    return base.join(' ');
 }
 
 // ======================================================================
@@ -735,9 +874,9 @@ function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, requi
 // ======================================================================
 app.post('/api/chat', async (req, res) => {
     try {
-        if (LLAVES_GEMINI.length === 0) {
+        if (!MODELOS_NVIDIA.some((m) => m.key) && LLAVES_GEMINI.length === 0) {
             return res.status(500).json({
-                error: '⚠️ Error de Servidor: Las llaves Gemini no están configuradas.'
+                error: '⚠️ Error de Servidor: No hay motores IA configurados.'
             });
         }
 
@@ -893,27 +1032,46 @@ REGLAS DE ORO INQUEBRANTABLES:
             esConsultaDeActualidad(mensajeLimpio) ||
             !!busquedaProfunda;
 
+        const esCreativeTask = esTareaCreativa(mensajeLimpio);
+        const usarGeminiVisual = !!archivoBase64;
         let textoIA = '';
         let nvidiaTuvoExito = false;
-        let motorUsado = 'gemini';
+        let motorUsado = 'nvidia';
+        let ultimoErrorNvidia = null;
 
-        const requiereRutaNvidia =
-            requiereNvidia &&
-            !archivoBase64 &&
-            !requiereGoogle;
+        const cacheKey = crearClaveCache({
+            mensaje: mensajeSeguro,
+            modoAplicado,
+            algoritmo: ajusteAlgoritmo,
+            perfil: perfilTexto,
+            archivo: !!archivoBase64
+        });
+
+        if (!usarGeminiVisual && !requiereGoogle) {
+            const cache = obtenerCache(cacheKey);
+            if (cache) {
+                return res.json({
+                    ...cache,
+                    cacheHit: true
+                });
+            }
+        }
 
         // ======================================================================
-        // RUTA 1: NVIDIA (MATEMÁTICAS + ESTUDIO)
+        // RUTA 1: NVIDIA (TEXTO POR DEFECTO)
+        // DeepSeek: estudio/razonamiento
+        // Qwen: estructura/código/clases
+        // Llama: conversación, creativo y político
         // ======================================================================
-        if (requiereRutaNvidia) {
-            const modelosOrdenados =
-                modoAplicado === 'estudio'
-                    ? [
-                          MODELOS_NVIDIA.find((m) => m.id === 'deepseek-ai/deepseek-r1'),
-                          MODELOS_NVIDIA.find((m) => m.id === 'meta/llama-3.1-70b-instruct'),
-                          MODELOS_NVIDIA.find((m) => m.id === 'qwen/qwen2.5-coder-32b-instruct')
-                      ].filter(Boolean)
-                    : MODELOS_NVIDIA;
+        if (!usarGeminiVisual) {
+            const modelosOrdenados = seleccionarModelosNvidia(modoAplicado, mensajeLimpio);
+            const instruccionExtra = construirInstruccionNvidia({
+                modoAplicado,
+                peticionCorta,
+                peticionDetallada,
+                esCreativeTask,
+                mensajeLimpio
+            });
 
             for (let i = 0; i < modelosOrdenados.length; i++) {
                 const modeloNvidia = modelosOrdenados[i];
@@ -923,11 +1081,6 @@ REGLAS DE ORO INQUEBRANTABLES:
                 }
 
                 try {
-                    const instruccionExtra =
-                        modoAplicado === 'estudio'
-                            ? 'Explica como tutor experto, pero con máxima economía de palabras. Si el ejercicio es simple, da solo respuesta y explicación breve. Si es complejo, usa únicamente pasos esenciales. No agregues ejemplo extra ni mini práctica final salvo que el usuario lo pida.'
-                            : 'Resuelve de forma clara y breve. Si el problema es simple, da resultado y pasos mínimos. Si es complejo, explica solo lo necesario.';
-
                     const respuestaNvidia = await fetch(
                         'https://integrate.api.nvidia.com/v1/chat/completions',
                         {
@@ -945,14 +1098,24 @@ REGLAS DE ORO INQUEBRANTABLES:
                                     },
                                     {
                                         role: 'user',
-                                        content: mensajeSeguro
+                                        content: esConsultaDeActualidad(mensajeLimpio) && !busquedaProfunda
+                                            ? `Si no puedes verificar en vivo, dilo con honestidad. Fecha actual de referencia en Perú: ${fechaHoraPeru}. Mensaje: ${mensajeSeguro}`
+                                            : mensajeSeguro
                                     }
                                 ],
                                 temperature:
                                     modoAplicado === 'analitico' || modoAplicado === 'estudio'
                                         ? 0.2
-                                        : 0.4,
-                                max_tokens: obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado: peticionDetallada, requiereGoogle })
+                                        : modoAplicado === 'creativo'
+                                            ? 0.55
+                                            : 0.35,
+                                max_tokens: obtenerMaxTokensSalida({
+                                    archivoBase64,
+                                    peticionCorta,
+                                    detallado: peticionDetallada,
+                                    modoAplicado,
+                                    esCreativeTask
+                                })
                             })
                         }
                     );
@@ -967,19 +1130,23 @@ REGLAS DE ORO INQUEBRANTABLES:
                     ) {
                         textoIA = datosNvidia.choices[0].message.content;
                         nvidiaTuvoExito = true;
-                        motorUsado = `nvidia:${modeloNvidia.id.split('/')[0]}`;
+                        const shortModel = modeloNvidia.id.split('/')[0];
+                        motorUsado = `nvidia:${shortModel}`;
                         break;
                     }
+
+                    ultimoErrorNvidia = datosNvidia?.error || 'NVIDIA sin contenido útil.';
                 } catch (errorNvidia) {
+                    ultimoErrorNvidia = errorNvidia;
                     console.warn('NVIDIA falló con', modeloNvidia.id, errorNvidia?.message || errorNvidia);
                 }
             }
         }
 
         // ======================================================================
-        // RUTA 2: GEMINI (CHARLA, CAMPAÑA, WEB, IMÁGENES, RESPALDO GENERAL)
+        // RUTA 2: GEMINI (SOLO IMÁGENES/ARCHIVOS y búsqueda profunda explícita)
         // ======================================================================
-        if (!nvidiaTuvoExito) {
+        if (!nvidiaTuvoExito && (usarGeminiVisual || !!busquedaProfunda)) {
             let intentoExitosoGemini = false;
             let intentosRealizados = 0;
             let ultimoErrorGemini = null;
@@ -1004,12 +1171,18 @@ REGLAS DE ORO INQUEBRANTABLES:
                         model: 'gemini-2.5-flash',
                         systemInstruction: contextoConversacion,
                         generationConfig: {
-                            maxOutputTokens: obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado: peticionDetallada, requiereGoogle }),
+                            maxOutputTokens: obtenerMaxTokensSalida({
+                                archivoBase64,
+                                peticionCorta,
+                                detallado: peticionDetallada,
+                                modoAplicado,
+                                esCreativeTask
+                            }),
                             temperature: ajusteAlgoritmo === 'breve' ? 0.2 : 0.3
                         }
                     };
 
-                    if (requiereGoogle && !archivoBase64) {
+                    if (!!busquedaProfunda && !archivoBase64) {
                         modelConfig.tools = [{ googleSearch: {} }];
                     }
 
@@ -1033,12 +1206,13 @@ REGLAS DE ORO INQUEBRANTABLES:
                         ];
 
                         result = await model.generateContent(partes);
+                        motorUsado = 'gemini:vision';
                     } else {
                         result = await model.generateContent(`Fecha actual en Perú: ${fechaHoraPeru}. Mensaje del estudiante: ${mensajeSeguro}`);
+                        motorUsado = 'gemini:deep-search';
                     }
 
                     textoIA = result.response.text();
-                    motorUsado = requiereGoogle ? 'gemini+search' : 'gemini';
                     intentoExitosoGemini = true;
                 } catch (errorGemini) {
                     ultimoErrorGemini = errorGemini;
@@ -1052,37 +1226,53 @@ REGLAS DE ORO INQUEBRANTABLES:
                     );
 
                     if (esCuota) {
-                        bloquearLlaveGemini(indiceActual, Math.max(retryMs, 30 * 60 * 1000), 'cuota');
+                        if (esCuotaDiariaGemini(errorGemini)) {
+                            bloquearLlaveGemini(indiceActual, msHastaMedianochePeru(), 'cuota diaria');
+                        } else {
+                            bloquearLlaveGemini(indiceActual, Math.max(retryMs, 20 * 60 * 1000), 'cuota temporal');
+                        }
                     }
 
                     intentosRealizados++;
                 }
             }
 
-            if (!intentoExitosoGemini) {
-                if (!textoIA && !archivoBase64) {
-                    textoIA = 'Hoy Gemini está saturado o sin cuota en las llaves disponibles. Intenté rotar entre proyectos, pero no quedaron libres. Reformula corto o prueba otra vez en unos minutos.';
-                    motorUsado = 'fallback';
-                } else {
+            if (!intentoExitosoGemini && !nvidiaTuvoExito) {
+                if (usarGeminiVisual) {
                     throw new Error(
-                        `Fallaron todas las llaves Gemini. Último error: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
+                        `No se pudo procesar el archivo con Gemini. Último error: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
                     );
                 }
+
+                throw new Error(
+                    `Fallaron NVIDIA y Gemini deep search. Último error Gemini: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
+                );
             }
+        }
+
+        if (!textoIA && !nvidiaTuvoExito) {
+            const detalle = ultimoErrorNvidia?.message || ultimoErrorNvidia || '';
+            throw new Error(`No hubo respuesta útil de NVIDIA. ${detalle}`);
         }
 
         textoIA = postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado);
 
-        return res.json({
+        const respuestaPayload = {
             respuesta: textoIA,
             tituloNuevo,
             modoAplicado,
-            requiereGoogle,
+            requiereGoogle: !!busquedaProfunda,
             motor: motorUsado,
             alerta: {
                 activada: false
             }
-        });
+        };
+
+        if (!usarGeminiVisual && !requiereGoogle) {
+            guardarCache(cacheKey, respuestaPayload, esConsultaDeActualidad(mensajeLimpio) ? 60 * 1000 : 10 * 60 * 1000);
+        }
+
+        return res.json(respuestaPayload);
     } catch (error) {
         console.error('Error Núcleo:', error);
 

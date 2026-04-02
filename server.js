@@ -193,7 +193,8 @@ function crearClaveCache(datos) {
         datos?.modoAplicado || '',
         datos?.algoritmo || '',
         datos?.perfil || '',
-        datos?.archivo ? 'archivo' : 'texto'
+        datos?.archivo ? 'archivo' : 'texto',
+        datos?.documentContext ? 'docctx' : ''
     ];
     return partes.join('||');
 }
@@ -779,13 +780,43 @@ function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
     }));
 }
 
+function normalizarTextoTecnico(texto) {
+    let t = (texto || '').toString();
+    t = t.replace(/\\\[/g, '').replace(/\\\]/g, '');
+    t = t.replace(/\\\(/g, '').replace(/\\\)/g, '');
+    t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '$1/$2');
+    t = t.replace(/\\times/g, '×').replace(/\\cdot/g, '·');
+    t = t.replace(/\\pi/g, 'π');
+    t = t.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+    return t;
+}
+
+function limpiarDocumentoExtraido(texto) {
+    return normalizarTextoTecnico((texto || '').replace(/```[\s\S]*?```/g, ' ').replace(/<[^>]+>/g, ' '))
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+function resumirDocumentoContexto(texto) {
+    const limpio = limpiarDocumentoExtraido(texto);
+    const palabras = limpio.split(/\s+/).filter(Boolean);
+    return palabras.slice(0, 90).join(' ').trim();
+}
+
+function esSeguimientoDeDocumento(mensajeLimpio) {
+    return textoIncluyeAlguno(mensajeLimpio, [
+        'solo la clave', 'solo clave', 'clave', 'alternativa', 'solo la alternativa', 'solo respuesta', 'respuesta',
+        'explica breve', 'explicame breve', 'paso a paso', 'solo resultado', 'traduce', 'pásalo limpio', 'pasalo limpio'
+    ]);
+}
+
 function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, modoAplicado, esCreativeTask }) {
-    if (archivoBase64) return 360;
-    if (peticionCorta) return 220;
-    if (esCreativeTask || modoAplicado === 'creativo') return detallado ? 700 : 460;
-    if (modoAplicado === 'estudio') return detallado ? 780 : 420;
-    if (modoAplicado === 'analitico') return detallado ? 700 : 420;
-    return detallado ? 620 : 360;
+    if (archivoBase64) return 420;
+    if (peticionCorta) return esCreativeTask ? 320 : 240;
+    if (esCreativeTask || modoAplicado === 'creativo') return detallado ? 900 : 620;
+    if (modoAplicado === 'estudio') return detallado ? 900 : 560;
+    if (modoAplicado === 'analitico') return detallado ? 760 : 520;
+    return detallado ? 700 : 420;
 }
 
 function esTareaCreativa(mensajeLimpio) {
@@ -839,27 +870,27 @@ function seleccionarModelosNvidia(modoAplicado, mensajeLimpio) {
 
 function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetallada, esCreativeTask, mensajeLimpio }) {
     const base = [];
-    base.push('Responde en español claro y natural.');
+    base.push('Responde en español claro, humano, divertido y útil.');
+    base.push('Usa un toque muy breve de inglés solo si encaja natural, como good point, nice move o future.');
     base.push('No cortes la respuesta a la mitad.');
     base.push('No inventes datos externos ni resultados en tiempo real.');
-    base.push('Si el usuario pide algo de hoy, actual o con fuente y no tienes verificación web activa, dilo con honestidad.');
+    base.push('Si el usuario pide algo actual y no hay verificación web, dilo con honestidad.');
+    base.push('No suenes como IA fría; suena cercano, friendly y seguro.');
 
-    if (peticionCorta) {
-        base.push('El usuario pidió brevedad. Máximo enfoque, mínimo relleno.');
-    }
+    if (peticionCorta) base.push('El usuario pidió brevedad: ve al grano, sin relleno.');
 
     if (modoAplicado === 'estudio') {
-        base.push('Actúa como tutor moderno: si es simple, respuesta + explicación breve; si es complejo, solo pasos esenciales.');
+        base.push('Actúa como tutor moderno: respuesta corta primero, luego una explicación breve y clara. Casi sin emojis.');
     } else if (modoAplicado === 'analitico') {
-        base.push('Analiza con precisión, estructura y lógica.');
+        base.push('Analiza con precisión, estructura y lógica. Sin emojis.');
     } else if (modoAplicado === 'creativo') {
-        base.push('Sé memorable y creativo, pero mantén claridad y no te extiendas de más.');
+        base.push('Sé imaginativo, cálido y memorable. Puedes usar hasta 2 emojis si ayudan.');
     } else {
-        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural.');
+        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural. Usa como máximo 1 emoji.');
     }
 
     if (esCreativeTask) {
-        base.push('Si el usuario pide historia, cuento, título o párrafos, entrega el texto completo en una sola respuesta, sin dejar frases inconclusas.');
+        base.push('Si piden historia, cuento, título o párrafos, entrega el texto completo, con inicio y cierre claros, sin frases inconclusas.');
     }
 
     if (mensajeLimpio.includes('plan de gobierno') && !peticionDetallada) {
@@ -895,11 +926,13 @@ app.post('/api/chat', async (req, res) => {
             userMeta,
             preferenciasUsuario,
             busquedaProfunda,
-            modoManual
+            modoManual,
+            documentContext
         } = req.body;
 
         const mensajeSeguro = limpiarTexto(mensaje);
         const mensajeLimpio = mensajeSeguro.toLowerCase();
+        let documentContextTexto = limpiarDocumentoExtraido(typeof documentContext === 'string' ? documentContext : documentContext?.textoExtraido || documentContext?.resumen || '');
 
         let tituloNuevo = null;
         if (generarTitulo) {
@@ -954,7 +987,7 @@ app.post('/api/chat', async (req, res) => {
         let promptDinamico =
             `Eres Fénix, la IA oficial de "Revolution JPII" ` +
             `(el movimiento revolucionario del Colegio Juan Pablo II). ` +
-            `Tu misión es ayudar, orientar y convencer con inteligencia, utilidad real y contexto humano.\n\n` +
+            `Tu misión es ayudar, orientar y convencer con inteligencia, utilidad real, calidez humana y buen criterio.\n\n` +
             `${bloqueMemoriaBase}\n\n` +
             `${bloqueDiccionario}\n\n`;
 
@@ -969,7 +1002,7 @@ Eres calculador, objetivo y estratégico. Analizas con precisión, comparas y ar
 Eres ingenioso, visual y memorable. Puedes usar metáforas, frases épicas y un toque artístico, pero sin perder claridad.`;
         } else {
             promptDinamico += `ESTÁS EN MODO POLÍTICO.
-Eres un compañero empático, leal e inspirador. Debes sembrar interés por Revolution JPII de manera natural, sin sonar forzado. Puedes usar frases potentes como: ${frasesImpacto.join(' | ')}`;
+Eres un compañero empático, leal, divertido y humano. Debes sembrar interés por Revolution JPII de manera natural, sin sonar forzado. Puedes usar frases potentes como: ${frasesImpacto.join(' | ')}`;
         }
 
         promptDinamico += `
@@ -1023,17 +1056,21 @@ REGLAS DE ORO INQUEBRANTABLES:
             contextoConversacion += '----------------------------------------------\n';
         }
 
+        if (documentContextTexto) {
+            contextoConversacion += `\n--- CONTEXTO DEL DOCUMENTO EXTRAÍDO ---\n${documentContextTexto.slice(0, 4000)}\n--------------------------------------\n`;
+        }
+
         const fechaHoraPeru = obtenerFechaHoraPeru();
         contextoConversacion += `\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad. Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Si preguntan por algo "de hoy", "ayer", "actual" o "quién ganó", usa esta referencia temporal y prioriza búsqueda web.`;
 
-        const requiereNvidia = detectarTemaMatematico(mensajeLimpio);
+        const requiereNvidia = detectarTemaMatematico(mensajeLimpio) || !!documentContextTexto;
         const requiereGoogle =
-            detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) ||
-            esConsultaDeActualidad(mensajeLimpio) ||
-            !!busquedaProfunda;
+            (!documentContextTexto && detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo)) ||
+            (!documentContextTexto && esConsultaDeActualidad(mensajeLimpio)) ||
+            (!!busquedaProfunda && !documentContextTexto);
 
         const esCreativeTask = esTareaCreativa(mensajeLimpio);
-        const usarGeminiVisual = !!archivoBase64;
+        const usarGeminiVisual = !!archivoBase64 && !documentContextTexto;
         let textoIA = '';
         let nvidiaTuvoExito = false;
         let motorUsado = 'nvidia';
@@ -1044,7 +1081,8 @@ REGLAS DE ORO INQUEBRANTABLES:
             modoAplicado,
             algoritmo: ajusteAlgoritmo,
             perfil: perfilTexto,
-            archivo: !!archivoBase64
+            archivo: !!archivoBase64,
+            documentContext: !!documentContextTexto
         });
 
         if (!usarGeminiVisual && !requiereGoogle) {
@@ -1054,6 +1092,46 @@ REGLAS DE ORO INQUEBRANTABLES:
                     ...cache,
                     cacheHit: true
                 });
+            }
+        }
+
+        let documentoExtraidoEnServidor = null;
+        if (archivoBase64 && !documentContextTexto && LLAVES_GEMINI.length > 0) {
+            let intentoOCR = 0;
+            while (intentoOCR < LLAVES_GEMINI.length) {
+                const indiceActual = (indiceLlaveGemini + intentoOCR) % LLAVES_GEMINI.length;
+                if (!llaveGeminiDisponible(indiceActual)) {
+                    intentoOCR++;
+                    continue;
+                }
+                try {
+                    const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceActual]);
+                    const model = genAI.getGenerativeModel({
+                        model: 'gemini-2.5-flash',
+                        generationConfig: { maxOutputTokens: 700, temperature: 0.1 }
+                    });
+                    const partes = [
+                        { text: 'Extrae el texto visible o el enunciado del archivo. No lo resuelvas todavía. Devuelve texto limpio, claro y continuo. Si hay fórmulas, exprésalas en formato escolar simple, sin LaTeX crudo.' },
+                        { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
+                    ];
+                    const result = await model.generateContent(partes);
+                    documentoExtraidoEnServidor = limpiarDocumentoExtraido(result.response.text());
+                    documentContextTexto = documentoExtraidoEnServidor;
+                    indiceLlaveGemini = (indiceActual + 1) % Math.max(LLAVES_GEMINI.length, 1);
+                    motorUsado = 'gemini:ocr+nvidia';
+                    break;
+                } catch (errorGemini) {
+                    const textoError = (errorGemini?.message || errorGemini || '').toString();
+                    const retryMs = extraerRetryMs(errorGemini);
+                    if (/429|quota exceeded|too many requests/i.test(textoError)) {
+                        if (esCuotaDiariaGemini(errorGemini)) {
+                            bloquearLlaveGemini(indiceActual, msHastaMedianochePeru(), 'cuota diaria');
+                        } else {
+                            bloquearLlaveGemini(indiceActual, Math.max(retryMs, 20 * 60 * 1000), 'cuota temporal');
+                        }
+                    }
+                    intentoOCR++;
+                }
             }
         }
 
@@ -1098,9 +1176,14 @@ REGLAS DE ORO INQUEBRANTABLES:
                                     },
                                     {
                                         role: 'user',
-                                        content: esConsultaDeActualidad(mensajeLimpio) && !busquedaProfunda
-                                            ? `Si no puedes verificar en vivo, dilo con honestidad. Fecha actual de referencia en Perú: ${fechaHoraPeru}. Mensaje: ${mensajeSeguro}`
-                                            : mensajeSeguro
+                                        content: documentContextTexto
+                                            ? `CONTEXTO DEL DOCUMENTO EXTRAÍDO:
+${documentContextTexto}
+
+SOLICITUD ACTUAL DEL ESTUDIANTE: ${mensajeSeguro}`
+                                            : esConsultaDeActualidad(mensajeLimpio) && !busquedaProfunda
+                                                ? `Si no puedes verificar en vivo, dilo con honestidad. Fecha actual de referencia en Perú: ${fechaHoraPeru}. Mensaje: ${mensajeSeguro}`
+                                                : mensajeSeguro
                                     }
                                 ],
                                 temperature:
@@ -1263,6 +1346,7 @@ REGLAS DE ORO INQUEBRANTABLES:
             modoAplicado,
             requiereGoogle: !!busquedaProfunda,
             motor: motorUsado,
+            documentContext: documentContextTexto ? { textoExtraido: documentContextTexto, resumen: resumirDocumentoContexto(documentContextTexto) } : null,
             alerta: {
                 activada: false
             }

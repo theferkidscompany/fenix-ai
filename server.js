@@ -626,17 +626,19 @@ function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoApli
     const quiereBreve = detectarPeticionCorta(mensajeLimpio) || ajusteAlgoritmo === 'breve';
     const creativo = modoAplicado === 'creativo' || esTareaCreativa(mensajeLimpio);
 
-    texto = texto
+    texto = normalizarTextoTecnico(texto)
         .replace(/\n{3,}/g, '\n\n')
         .replace(/[ \t]+\n/g, '\n')
         .replace(/([A-Za-z])\/n\/([A-Za-z])/g, '$1 $2')
+        .replace(/\s+([,.;:!?])/g, '$1')
+        .replace(/([,.;:!?])(\S)/g, '$1 $2')
         .trim();
 
     const tomarHastaPuntuacion = (base, maxPalabras) => {
         const palabras = limpiarTexto(base).split(' ').filter(Boolean);
         if (palabras.length <= maxPalabras) return base.trim();
 
-        const recorte = palabras.slice(0, maxPalabras + 15).join(' ');
+        const recorte = palabras.slice(0, maxPalabras + 20).join(' ');
         const idx = Math.max(
             recorte.lastIndexOf('. '),
             recorte.lastIndexOf('! '),
@@ -652,9 +654,9 @@ function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoApli
     };
 
     if (quiereBreve) {
-        texto = tomarHastaPuntuacion(texto, 85);
-    } else if (!creativo && contarPalabras(texto) > 210) {
-        texto = tomarHastaPuntuacion(texto, 180);
+        texto = tomarHastaPuntuacion(texto, 95);
+    } else if (!creativo && contarPalabras(texto) > 260) {
+        texto = tomarHastaPuntuacion(texto, 200);
     }
 
     if (!/[.!?…:]$/.test(texto) && contarPalabras(texto) > 12) {
@@ -781,15 +783,25 @@ function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
 }
 
 function normalizarTextoTecnico(texto) {
-    let t = (texto || '').toString();
-    t = t.replace(/\\\[/g, '').replace(/\\\]/g, '');
-    t = t.replace(/\\\(/g, '').replace(/\\\)/g, '');
-    t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '$1/$2');
-    t = t.replace(/\\times/g, '×').replace(/\\cdot/g, '·');
-    t = t.replace(/\\pi/g, 'π');
-    t = t.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
-    return t;
-}
+        let t = (texto || '').toString();
+        t = t.replace(/\r\n/g, '\n');
+        t = t.replace(/\\begin\{aligned\}|\\end\{aligned\}/g, '');
+        t = t.replace(/\\left|\\right/g, '');
+        t = t.replace(/\\\[/g, '').replace(/\\\]/g, '');
+        t = t.replace(/\\\(/g, '').replace(/\\\)/g, '');
+        t = t.replace(/\$\$/g, '');
+        t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
+        t = t.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+        t = t.replace(/\\times/g, '×').replace(/\\cdot/g, '·').replace(/\\div/g, '÷');
+        t = t.replace(/\\pi/g, 'π').replace(/\\theta/g, 'θ').replace(/\\alpha/g, 'α');
+        t = t.replace(/\\beta/g, 'β').replace(/\\gamma/g, 'γ').replace(/\\delta/g, 'δ');
+        t = t.replace(/\\leq/g, '≤').replace(/\\geq/g, '≥').replace(/\\neq/g, '≠');
+        t = t.replace(/\\sum/g, '∑').replace(/\\int/g, '∫');
+        t = t.replace(/\\text\{([^{}]+)\}/g, '$1');
+        t = t.replace(/\\\\/g, '\n');
+        t = t.replace(/\s{2,}/g, ' ');
+        return t;
+    }
 
 function limpiarDocumentoExtraido(texto) {
     return normalizarTextoTecnico((texto || '').replace(/```[\s\S]*?```/g, ' ').replace(/<[^>]+>/g, ' '))
@@ -811,12 +823,12 @@ function esSeguimientoDeDocumento(mensajeLimpio) {
 }
 
 function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, modoAplicado, esCreativeTask }) {
-    if (archivoBase64) return 420;
-    if (peticionCorta) return esCreativeTask ? 320 : 240;
-    if (esCreativeTask || modoAplicado === 'creativo') return detallado ? 900 : 620;
-    if (modoAplicado === 'estudio') return detallado ? 900 : 560;
-    if (modoAplicado === 'analitico') return detallado ? 760 : 520;
-    return detallado ? 700 : 420;
+    if (archivoBase64) return 900;
+    if (peticionCorta) return esCreativeTask ? 420 : 300;
+    if (esCreativeTask || modoAplicado === 'creativo') return detallado ? 1200 : 800;
+    if (modoAplicado === 'estudio') return detallado ? 1000 : 700;
+    if (modoAplicado === 'analitico') return detallado ? 900 : 620;
+    return detallado ? 900 : 520;
 }
 
 function esTareaCreativa(mensajeLimpio) {
@@ -871,11 +883,14 @@ function seleccionarModelosNvidia(modoAplicado, mensajeLimpio) {
 function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetallada, esCreativeTask, mensajeLimpio }) {
     const base = [];
     base.push('Responde en español claro, humano, divertido y útil.');
-    base.push('Usa un toque muy breve de inglés solo si encaja natural, como good point, nice move o future.');
+    base.push('Habla como una persona real: cálida, friendly y segura, no como un informe frío.');
+    base.push('Usa un toque muy breve de inglés solo si encaja natural, como good point, nice move, future o teamwork.');
     base.push('No cortes la respuesta a la mitad.');
     base.push('No inventes datos externos ni resultados en tiempo real.');
     base.push('Si el usuario pide algo actual y no hay verificación web, dilo con honestidad.');
-    base.push('No suenes como IA fría; suena cercano, friendly y seguro.');
+    base.push('Si el mensaje trata de noticias, hoy, ayer o resultados actuales, espera la ruta de verificación web.');
+    base.push('Cuando el usuario pida un cuento, historia, exposición o clase, termina el texto completo con cierre claro.');
+    base.push('No suenes como IA fría; suena cercano, humano y con un poquito de energía.');
 
     if (peticionCorta) base.push('El usuario pidió brevedad: ve al grano, sin relleno.');
 
@@ -886,7 +901,7 @@ function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetal
     } else if (modoAplicado === 'creativo') {
         base.push('Sé imaginativo, cálido y memorable. Puedes usar hasta 2 emojis si ayudan.');
     } else {
-        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural. Usa como máximo 1 emoji.');
+        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural. Usa como máximo 1 emoji. Si suma al tono, abre con una frase potente y cálida.');
     }
 
     if (esCreativeTask) {
@@ -1041,6 +1056,10 @@ REGLAS DE ORO INQUEBRANTABLES:
             promptDinamico += `\nPETICIÓN ESPECIAL: RESPUESTA CORTA. Máximo enfoque, mínimo relleno.`;
         }
 
+        if (requiereGoogle) {
+            promptDinamico += `\nPETICIÓN DE VERIFICACIÓN WEB: prioriza información actual y verificable. Si usas búsqueda, responde con claridad y no inventes.`;
+        }
+
         if (mensajeLimpio.includes('plan de gobierno') && !peticionDetallada) {
             promptDinamico += `\nSI EL USUARIO PIDE EL PLAN DE GOBIERNO Y NO PIDE DETALLE, responde con 5 ejes + 1 idea principal por eje. Máximo 120 palabras salvo que pida ampliar.`;
         }
@@ -1058,23 +1077,31 @@ REGLAS DE ORO INQUEBRANTABLES:
 
         if (documentContextTexto) {
             contextoConversacion += `\n--- CONTEXTO DEL DOCUMENTO EXTRAÍDO ---\n${documentContextTexto.slice(0, 4000)}\n--------------------------------------\n`;
+            contextoConversacion += `\nINSTRUCCIÓN PARA DOCUMENTOS: Si el archivo trae varios ejercicios, respóndelos en orden. Si el usuario pide "solo la clave", "alternativa", "solo resultado" o "explicación breve", responde exactamente con ese formato y sin perder ninguna parte importante del documento.`;
         }
 
         const fechaHoraPeru = obtenerFechaHoraPeru();
         contextoConversacion += `\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad. Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Si preguntan por algo "de hoy", "ayer", "actual" o "quién ganó", usa esta referencia temporal y prioriza búsqueda web.`;
 
         const requiereNvidia = detectarTemaMatematico(mensajeLimpio) || !!documentContextTexto;
-        const requiereGoogle =
-            (!documentContextTexto && detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo)) ||
-            (!documentContextTexto && esConsultaDeActualidad(mensajeLimpio)) ||
-            (!!busquedaProfunda && !documentContextTexto);
+        const requiereGoogle = (
+            !documentContextTexto && (
+                detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) ||
+                esConsultaDeActualidad(mensajeLimpio)
+            )
+        ) || (!!busquedaProfunda && !documentContextTexto);
 
         const esCreativeTask = esTareaCreativa(mensajeLimpio);
         const usarGeminiVisual = !!archivoBase64 && !documentContextTexto;
+        const usarGeminiBusqueda = !documentContextTexto && requiereGoogle;
+
         let textoIA = '';
         let nvidiaTuvoExito = false;
+        let geminiTuvoExito = false;
         let motorUsado = 'nvidia';
         let ultimoErrorNvidia = null;
+        let ultimoErrorGemini = null;
+        let seUsoOCR = false;
 
         const cacheKey = crearClaveCache({
             mensaje: mensajeSeguro,
@@ -1082,10 +1109,12 @@ REGLAS DE ORO INQUEBRANTABLES:
             algoritmo: ajusteAlgoritmo,
             perfil: perfilTexto,
             archivo: !!archivoBase64,
-            documentContext: !!documentContextTexto
+            documentContext: !!documentContextTexto,
+            requiereGoogle: !!requiereGoogle,
+            busqueda: !!busquedaProfunda
         });
 
-        if (!usarGeminiVisual && !requiereGoogle) {
+        if (!usarGeminiVisual && !usarGeminiBusqueda) {
             const cache = obtenerCache(cacheKey);
             if (cache) {
                 return res.json({
@@ -1108,17 +1137,25 @@ REGLAS DE ORO INQUEBRANTABLES:
                     const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceActual]);
                     const model = genAI.getGenerativeModel({
                         model: 'gemini-2.5-flash',
-                        generationConfig: { maxOutputTokens: 700, temperature: 0.1 }
+                        generationConfig: { maxOutputTokens: 900, temperature: 0.1 }
                     });
                     const partes = [
-                        { text: 'Extrae el texto visible o el enunciado del archivo. No lo resuelvas todavía. Devuelve texto limpio, claro y continuo. Si hay fórmulas, exprésalas en formato escolar simple, sin LaTeX crudo.' },
-                        { inlineData: { data: archivoBase64.split(',')[1], mimeType: mimeType } }
+                        {
+                            text: 'Extrae TODO el texto visible o el enunciado del archivo. Conserva el orden, numeración, opciones, títulos y símbolos útiles. Si hay varias preguntas o ejercicios, sepáralos por secciones o viñetas. No lo resuelvas todavía. Devuelve texto limpio, continuo y escolar. Si hay fórmulas, exprésalas en formato simple, sin LaTeX crudo.'
+                        },
+                        {
+                            inlineData: {
+                                data: archivoBase64.split(',')[1],
+                                mimeType: mimeType
+                            }
+                        }
                     ];
                     const result = await model.generateContent(partes);
                     documentoExtraidoEnServidor = limpiarDocumentoExtraido(result.response.text());
                     documentContextTexto = documentoExtraidoEnServidor;
                     indiceLlaveGemini = (indiceActual + 1) % Math.max(LLAVES_GEMINI.length, 1);
-                    motorUsado = 'gemini:ocr+nvidia';
+                    seUsoOCR = true;
+                    motorUsado = 'gemini:ocr';
                     break;
                 } catch (errorGemini) {
                     const textoError = (errorGemini?.message || errorGemini || '').toString();
@@ -1135,13 +1172,66 @@ REGLAS DE ORO INQUEBRANTABLES:
             }
         }
 
-        // ======================================================================
-        // RUTA 1: NVIDIA (TEXTO POR DEFECTO)
-        // DeepSeek: estudio/razonamiento
-        // Qwen: estructura/código/clases
-        // Llama: conversación, creativo y político
-        // ======================================================================
-        if (!usarGeminiVisual) {
+        if (usarGeminiBusqueda) {
+            let intentoExitosoGemini = false;
+            let intentosRealizados = 0;
+
+            const inicioRotacion = indiceLlaveGemini;
+            indiceLlaveGemini = (indiceLlaveGemini + 1) % Math.max(LLAVES_GEMINI.length, 1);
+
+            while (!intentoExitosoGemini && intentosRealizados < LLAVES_GEMINI.length) {
+                const indiceActual = (inicioRotacion + intentosRealizados) % LLAVES_GEMINI.length;
+                if (!llaveGeminiDisponible(indiceActual)) {
+                    intentosRealizados++;
+                    continue;
+                }
+
+                try {
+                    const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceActual]);
+                    const modelConfig = {
+                        model: 'gemini-2.5-flash',
+                        systemInstruction: contextoConversacion,
+                        generationConfig: {
+                            maxOutputTokens: obtenerMaxTokensSalida({
+                                archivoBase64: null,
+                                peticionCorta,
+                                detallado: peticionDetallada,
+                                modoAplicado,
+                                esCreativeTask
+                            }),
+                            temperature: ajusteAlgoritmo === 'breve' ? 0.2 : 0.3
+                        }
+                    };
+
+                    if (requiereGoogle) {
+                        modelConfig.tools = [{ googleSearch: {} }];
+                    }
+
+                    const model = genAI.getGenerativeModel(modelConfig);
+                    const searchPrompt = `Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Mensaje del estudiante: ${mensajeSeguro}`;
+                    const result = await model.generateContent(searchPrompt);
+                    textoIA = result.response.text();
+                    motorUsado = 'gemini:search';
+                    geminiTuvoExito = true;
+                    intentoExitosoGemini = true;
+                    break;
+                } catch (errorGemini) {
+                    ultimoErrorGemini = errorGemini;
+                    const textoError = (errorGemini?.message || errorGemini || '').toString();
+                    const retryMs = extraerRetryMs(errorGemini);
+                    if (/429|quota exceeded|too many requests/i.test(textoError)) {
+                        if (esCuotaDiariaGemini(errorGemini)) {
+                            bloquearLlaveGemini(indiceActual, msHastaMedianochePeru(), 'cuota diaria');
+                        } else {
+                            bloquearLlaveGemini(indiceActual, Math.max(retryMs, 20 * 60 * 1000), 'cuota temporal');
+                        }
+                    }
+                    intentosRealizados++;
+                }
+            }
+        }
+
+        if (!geminiTuvoExito) {
             const modelosOrdenados = seleccionarModelosNvidia(modoAplicado, mensajeLimpio);
             const instruccionExtra = construirInstruccionNvidia({
                 modoAplicado,
@@ -1172,16 +1262,19 @@ REGLAS DE ORO INQUEBRANTABLES:
                                 messages: [
                                     {
                                         role: 'system',
-                                        content: contextoConversacion + '\n\nINSTRUCCIÓN EXTRA: ' + instruccionExtra
+                                        content:
+                                            contextoConversacion +
+                                            '\n\nINSTRUCCIÓN EXTRA: ' +
+                                            instruccionExtra +
+                                            (seUsoOCR
+                                                ? '\n\nCONTEXTO DEL DOCUMENTO EXTRAÍDO: Usa ese contenido completo como base. Si el documento trae varias preguntas o ejercicios, respóndelos en orden o aclara cuál resolver primero solo si realmente falta información.'
+                                                : '')
                                     },
                                     {
                                         role: 'user',
                                         content: documentContextTexto
-                                            ? `CONTEXTO DEL DOCUMENTO EXTRAÍDO:
-${documentContextTexto}
-
-SOLICITUD ACTUAL DEL ESTUDIANTE: ${mensajeSeguro}`
-                                            : esConsultaDeActualidad(mensajeLimpio) && !busquedaProfunda
+                                            ? `CONTEXTO DEL DOCUMENTO EXTRAÍDO:\n${documentContextTexto}\n\nSOLICITUD ACTUAL DEL ESTUDIANTE: ${mensajeSeguro}`
+                                            : esConsultaDeActualidad(mensajeLimpio) && !requiereGoogle
                                                 ? `Si no puedes verificar en vivo, dilo con honestidad. Fecha actual de referencia en Perú: ${fechaHoraPeru}. Mensaje: ${mensajeSeguro}`
                                                 : mensajeSeguro
                                     }
@@ -1214,7 +1307,7 @@ SOLICITUD ACTUAL DEL ESTUDIANTE: ${mensajeSeguro}`
                         textoIA = datosNvidia.choices[0].message.content;
                         nvidiaTuvoExito = true;
                         const shortModel = modeloNvidia.id.split('/')[0];
-                        motorUsado = `nvidia:${shortModel}`;
+                        motorUsado = seUsoOCR ? `gemini:ocr+nvidia:${shortModel}` : `nvidia:${shortModel}`;
                         break;
                     }
 
@@ -1226,113 +1319,10 @@ SOLICITUD ACTUAL DEL ESTUDIANTE: ${mensajeSeguro}`
             }
         }
 
-        // ======================================================================
-        // RUTA 2: GEMINI (SOLO IMÁGENES/ARCHIVOS y búsqueda profunda explícita)
-        // ======================================================================
-        if (!nvidiaTuvoExito && (usarGeminiVisual || !!busquedaProfunda)) {
-            let intentoExitosoGemini = false;
-            let intentosRealizados = 0;
-            let ultimoErrorGemini = null;
-
-            const inicioRotacion = indiceLlaveGemini;
-            indiceLlaveGemini = (indiceLlaveGemini + 1) % Math.max(LLAVES_GEMINI.length, 1);
-
-            while (!intentoExitosoGemini && intentosRealizados < LLAVES_GEMINI.length) {
-                const indiceActual = (inicioRotacion + intentosRealizados) % LLAVES_GEMINI.length;
-
-                if (!llaveGeminiDisponible(indiceActual)) {
-                    intentosRealizados++;
-                    continue;
-                }
-
-                const llaveActual = LLAVES_GEMINI[indiceActual];
-
-                try {
-                    const genAI = new GoogleGenerativeAI(llaveActual);
-
-                    const modelConfig = {
-                        model: 'gemini-2.5-flash',
-                        systemInstruction: contextoConversacion,
-                        generationConfig: {
-                            maxOutputTokens: obtenerMaxTokensSalida({
-                                archivoBase64,
-                                peticionCorta,
-                                detallado: peticionDetallada,
-                                modoAplicado,
-                                esCreativeTask
-                            }),
-                            temperature: ajusteAlgoritmo === 'breve' ? 0.2 : 0.3
-                        }
-                    };
-
-                    if (!!busquedaProfunda && !archivoBase64) {
-                        modelConfig.tools = [{ googleSearch: {} }];
-                    }
-
-                    const model = genAI.getGenerativeModel(modelConfig);
-
-                    let result;
-
-                    if (archivoBase64) {
-                        const partes = [
-                            {
-                                text:
-                                    'Analiza el archivo adjunto. Primero extrae el texto visible o el enunciado exacto. Si es una pregunta de matemáticas o razonamiento, resuélvela completa. Si el usuario pide solo la clave, solo da la alternativa. Si pide explicación breve, da respuesta + explicación breve. Mensaje actual: ' +
-                                    (mensajeSeguro || '¿Qué ves aquí?')
-                            },
-                            {
-                                inlineData: {
-                                    data: archivoBase64.split(',')[1],
-                                    mimeType: mimeType
-                                }
-                            }
-                        ];
-
-                        result = await model.generateContent(partes);
-                        motorUsado = 'gemini:vision';
-                    } else {
-                        result = await model.generateContent(`Fecha actual en Perú: ${fechaHoraPeru}. Mensaje del estudiante: ${mensajeSeguro}`);
-                        motorUsado = 'gemini:deep-search';
-                    }
-
-                    textoIA = result.response.text();
-                    intentoExitosoGemini = true;
-                } catch (errorGemini) {
-                    ultimoErrorGemini = errorGemini;
-                    const textoError = (errorGemini?.message || errorGemini || '').toString();
-                    const retryMs = extraerRetryMs(errorGemini);
-                    const esCuota = /429|quota exceeded|too many requests/i.test(textoError);
-
-                    console.error(
-                        `Gemini falló con la llave #${indiceActual + 1}:`,
-                        errorGemini?.message || errorGemini
-                    );
-
-                    if (esCuota) {
-                        if (esCuotaDiariaGemini(errorGemini)) {
-                            bloquearLlaveGemini(indiceActual, msHastaMedianochePeru(), 'cuota diaria');
-                        } else {
-                            bloquearLlaveGemini(indiceActual, Math.max(retryMs, 20 * 60 * 1000), 'cuota temporal');
-                        }
-                    }
-
-                    intentosRealizados++;
-                }
-            }
-
-            if (!intentoExitosoGemini && !nvidiaTuvoExito) {
-                if (usarGeminiVisual) {
-                    throw new Error(
-                        `No se pudo procesar el archivo con Gemini. Último error: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
-                    );
-                }
-
-                throw new Error(
-                    `Fallaron NVIDIA y Gemini deep search. Último error Gemini: ${ultimoErrorGemini?.message || ultimoErrorGemini}`
-                );
-            }
+        if (!textoIA && !nvidiaTuvoExito && !geminiTuvoExito) {
+            const detalle = ultimoErrorNvidia?.message || ultimoErrorNvidia || '';
+            throw new Error(`No hubo respuesta útil de NVIDIA. ${detalle}`);
         }
-
         if (!textoIA && !nvidiaTuvoExito) {
             const detalle = ultimoErrorNvidia?.message || ultimoErrorNvidia || '';
             throw new Error(`No hubo respuesta útil de NVIDIA. ${detalle}`);
@@ -1344,7 +1334,7 @@ SOLICITUD ACTUAL DEL ESTUDIANTE: ${mensajeSeguro}`
             respuesta: textoIA,
             tituloNuevo,
             modoAplicado,
-            requiereGoogle: !!busquedaProfunda,
+            requiereGoogle: !!requiereGoogle,
             motor: motorUsado,
             documentContext: documentContextTexto ? { textoExtraido: documentContextTexto, resumen: resumirDocumentoContexto(documentContextTexto) } : null,
             alerta: {

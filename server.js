@@ -22,7 +22,7 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // ======================================================================
-// CONFIGURACIÓN GENERAL
+// CONFIGURACION GENERAL
 // ======================================================================
 const PUERTO = process.env.PORT || 3000;
 const ADMIN_ALERT_EMAIL = process.env.ADMIN_ALERT_EMAIL || 'theferkidscompany@gmail.com';
@@ -36,12 +36,27 @@ const LLAVES_GEMINI = geminiKeysString
 let indiceLlaveGemini = 0;
 const ESTADO_LLAVES_GEMINI = [];
 const CACHE_RESPUESTAS = new Map();
+const ALERTAS_RECIENTES = [];
+const FEEDBACK_RECIENTE = [];
+const LIMITE_REGISTROS_LOCALES = 50;
 
 const MODELOS_NVIDIA = [
     { id: 'qwen/qwen2.5-coder-32b-instruct', key: process.env.NVIDIA_QWEN_KEY },
     { id: 'deepseek-ai/deepseek-r1', key: process.env.NVIDIA_DEEPSEEK_KEY },
     { id: 'meta/llama-3.1-70b-instruct', key: process.env.NVIDIA_LLAMA_KEY }
 ];
+
+function registrarLocal(lista, datos) {
+    lista.unshift({
+        idLocal: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        timestampLocal: new Date().toISOString(),
+        ...datos
+    });
+
+    if (lista.length > LIMITE_REGISTROS_LOCALES) {
+        lista.length = LIMITE_REGISTROS_LOCALES;
+    }
+}
 
 // ======================================================================
 // FIREBASE ADMIN (OPCIONAL, PARA MENSAJES_ALERTA / FEEDBACK / PANEL ADMIN)
@@ -60,9 +75,9 @@ if (admin && !admin.apps.length && process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
         });
 
         firestoreAdmin = admin.firestore();
-        console.log('✅ Firebase Admin inicializado correctamente.');
+        console.log('? Firebase Admin inicializado correctamente.');
     } catch (error) {
-        console.error('⚠️ No se pudo inicializar Firebase Admin:', error.message || error);
+        console.error('?? No se pudo inicializar Firebase Admin:', error.message || error);
     }
 }
 
@@ -92,14 +107,14 @@ if (
             }
         });
 
-        console.log('✅ Transporte SMTP listo.');
+        console.log('? Transporte SMTP listo.');
     } catch (error) {
-        console.error('⚠️ No se pudo crear el transporte SMTP:', error.message || error);
+        console.error('?? No se pudo crear el transporte SMTP:', error.message || error);
     }
 }
 
 // ======================================================================
-// TÍTULO LOCAL DESDE EL PRIMER MENSAJE
+// TITULO LOCAL DESDE EL PRIMER MENSAJE
 // NO USA GEMINI. NO LEE PROMPTS. NO LEE INSTRUCCIONES.
 // ======================================================================
 function crearTituloDesdePrimerMensaje(texto) {
@@ -614,6 +629,7 @@ function construirRespuestaSeguraAlerta(categoria) {
 }
 
 async function guardarMensajeAlerta(datos) {
+    registrarLocal(ALERTAS_RECIENTES, datos);
     if (!firestoreAdmin) return false;
 
     try {
@@ -633,7 +649,7 @@ async function enviarCorreoAlerta(datos) {
 
     try {
         const html = `
-            <h2>🚨 Alerta Fénix</h2>
+            <h2>Alerta Fénix</h2>
             <p><strong>Categoría:</strong> ${datos.categoria}</p>
             <p><strong>Nombre:</strong> ${datos.nombre || 'Sin nombre'}</p>
             <p><strong>Email:</strong> ${datos.email || 'Sin email'}</p>
@@ -646,7 +662,7 @@ async function enviarCorreoAlerta(datos) {
         await mailTransporter.sendMail({
             from: process.env.SMTP_FROM || process.env.SMTP_USER,
             to: ADMIN_ALERT_EMAIL,
-            subject: `🚨 Fénix alerta: ${datos.categoria}`,
+            subject: `Fénix alerta: ${datos.categoria}`,
             html
         });
 
@@ -658,6 +674,7 @@ async function enviarCorreoAlerta(datos) {
 }
 
 async function guardarFeedback(datos) {
+    registrarLocal(FEEDBACK_RECIENTE, datos);
     if (!firestoreAdmin) return false;
 
     try {
@@ -712,7 +729,7 @@ function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoApli
         texto = tomarHastaPuntuacion(texto, 200);
     }
 
-    if (!/[.!?…:]$/.test(texto) && contarPalabras(texto) > 12) {
+    if (!/[.!?:]$/.test(texto) && contarPalabras(texto) > 12) {
         const idx = Math.max(
             texto.lastIndexOf('.'),
             texto.lastIndexOf('!'),
@@ -786,7 +803,7 @@ EJE 3 (Emprendimiento - Regidor Racek):
 
 EJE 4 (Salud y Medio Ambiente - Regidora Mia):
 - The Green Squad: Inicial cuida plantas, Primaria llena la botella ECHO gigante, Secundaria gestiona la logística de reciclaje.
-- La Gran Papelatón: Venta de cuadernos viejos para comprar Ecotachos estéticos para el colegio.
+- La Gran Papelatón: Venta de cuadernos viejos para comprar Ecotachos estáticos para el colegio.
 - Eco-Monedas Fénix: Salones que más reciclan ganan privilegios (ej. elegir música en los recreos).
 
 EJE 5 (Derechos del Niño - Regidora Rafaella):
@@ -836,25 +853,30 @@ function compactarHistorialParaPrompt(historial, maxCharsPorMensaje = 180) {
 }
 
 function normalizarTextoTecnico(texto) {
-        let t = (texto || '').toString();
-        t = t.replace(/\r\n/g, '\n');
-        t = t.replace(/\\begin\{aligned\}|\\end\{aligned\}/g, '');
-        t = t.replace(/\\left|\\right/g, '');
-        t = t.replace(/\\\[/g, '').replace(/\\\]/g, '');
-        t = t.replace(/\\\(/g, '').replace(/\\\)/g, '');
-        t = t.replace(/\$\$/g, '');
-        t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
-        t = t.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
-        t = t.replace(/\\times/g, '×').replace(/\\cdot/g, '·').replace(/\\div/g, '÷');
-        t = t.replace(/\\pi/g, 'π').replace(/\\theta/g, 'θ').replace(/\\alpha/g, 'α');
-        t = t.replace(/\\beta/g, 'β').replace(/\\gamma/g, 'γ').replace(/\\delta/g, 'δ');
-        t = t.replace(/\\leq/g, '≤').replace(/\\geq/g, '≥').replace(/\\neq/g, '≠');
-        t = t.replace(/\\sum/g, '∑').replace(/\\int/g, '∫');
-        t = t.replace(/\\text\{([^{}]+)\}/g, '$1');
-        t = t.replace(/\\\\/g, '\n');
-        t = t.replace(/\s{2,}/g, ' ');
-        return t;
-    }
+    const aSuperindice = (char) => ({ '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻' })[char] || char;
+    const aSubindice = (char) => ({ '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', '+': '₊', '-': '₋' })[char] || char;
+    let t = (texto || '').toString();
+    t = t.replace(/\r\n/g, '\n');
+    t = t.replace(/\\begin\{(?:aligned|align\*?|cases)\}|\\end\{(?:aligned|align\*?|cases)\}/g, '');
+    t = t.replace(/\\left|\\right/g, '');
+    t = t.replace(/\\\[/g, '').replace(/\\\]/g, '');
+    t = t.replace(/\\\(/g, '').replace(/\\\)/g, '');
+    t = t.replace(/\$\$/g, '').replace(/\$/g, '');
+    t = t.replace(/\\d?frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
+    t = t.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+    t = t.replace(/\\times/g, '×').replace(/\\cdot/g, '·').replace(/\\div/g, '÷');
+    t = t.replace(/\\pi/g, 'π').replace(/\\theta/g, 'θ').replace(/\\alpha/g, 'α');
+    t = t.replace(/\\beta/g, 'β').replace(/\\gamma/g, 'γ').replace(/\\delta/g, 'δ');
+    t = t.replace(/\\leq/g, '≤').replace(/\\geq/g, '≥').replace(/\\neq/g, '≠');
+    t = t.replace(/\\sum/g, 'Σ').replace(/\\int/g, '∫').replace(/\\pm/g, '±').replace(/\\approx/g, '≈').replace(/\\infty/g, '∞');
+    t = t.replace(/\\rightarrow|\\to/g, '→');
+    t = t.replace(/\\text\{([^{}]+)\}|\\mathrm\{([^{}]+)\}|\\operatorname\{([^{}]+)\}/g, (_, a, b, c) => a || b || c || '');
+    t = t.replace(/\^([0-9+-]+)/g, (_, exp) => [...exp].map(aSuperindice).join(''));
+    t = t.replace(/_([0-9+-]+)/g, (_, exp) => [...exp].map(aSubindice).join(''));
+    t = t.replace(/\\\\/g, '\n');
+    t = t.replace(/\s{2,}/g, ' ');
+    return t.trim();
+}
 
 function limpiarDocumentoExtraido(texto) {
     return normalizarTextoTecnico((texto || '').replace(/```[\s\S]*?```/g, ' ').replace(/<[^>]+>/g, ' '))
@@ -980,10 +1002,17 @@ function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetal
 // ENDPOINT PRINCIPAL DE CHAT
 // ======================================================================
 app.post('/api/chat', async (req, res) => {
+    let tituloNuevo = null;
+    let modoAplicado = 'politico';
+    let complejidadFinal = 'auto';
+    let documentContextTexto = '';
+    let requiereGoogle = false;
+    let mensajeLimpio = '';
+
     try {
         if (!MODELOS_NVIDIA.some((m) => m.key) && LLAVES_GEMINI.length === 0) {
             return res.status(500).json({
-                error: '⚠️ Error de Servidor: No hay motores IA configurados.'
+                error: '?? Error de Servidor: No hay motores IA configurados.'
             });
         }
 
@@ -1008,16 +1037,15 @@ app.post('/api/chat', async (req, res) => {
         } = req.body;
 
         const mensajeSeguro = limpiarTexto(mensaje);
-        const mensajeLimpio = mensajeSeguro.toLowerCase();
-        let documentContextTexto = limpiarDocumentoExtraido(typeof documentContext === 'string' ? documentContext : documentContext?.textoExtraido || documentContext?.resumen || '');
+        mensajeLimpio = mensajeSeguro.toLowerCase();
+        documentContextTexto = limpiarDocumentoExtraido(typeof documentContext === 'string' ? documentContext : documentContext?.textoExtraido || documentContext?.resumen || '');
 
-        let tituloNuevo = null;
         if (generarTitulo) {
             tituloNuevo = crearTituloDesdePrimerMensaje(primerMensajeUsuario || mensajeSeguro);
         }
 
         const riesgo = detectarRiesgoPsicosocial(mensajeSeguro);
-        const modoAplicado = inferirModoAutomatico(
+        modoAplicado = inferirModoAutomatico(
             mensajeLimpio,
             modo || temperamento,
             perfilAcademico,
@@ -1104,7 +1132,13 @@ REGLAS DE ORO INQUEBRANTABLES:
         const perfilTexto = construirEtiquetaPerfil(perfilAcademico);
         const complejidadAplicada = detectarComplejidadAutomatica(mensajeLimpio);
         const complejidadSolicitada = typeof complejidad === 'string' && ['auto','simple','normal','detallada'].includes(complejidad) ? complejidad : 'auto';
-        const complejidadFinal = complejidadSolicitada === 'auto' ? complejidadAplicada : complejidadSolicitada;
+        complejidadFinal = complejidadSolicitada === 'auto' ? complejidadAplicada : complejidadSolicitada;
+        requiereGoogle = (
+            !documentContextTexto && (
+                detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) ||
+                esConsultaDeActualidad(mensajeLimpio)
+            )
+        ) || (!!busquedaProfunda && !documentContextTexto);
         promptDinamico += `\nPERFIL ACADÉMICO DEL USUARIO: ${perfilTexto}. Ajusta dificultad, vocabulario y profundidad a ese nivel.`;
         promptDinamico += `\nCOMPLEJIDAD APLICADA: ${complejidadFinal}. Si es simple, responde breve y claro. Si es normal, equilibra. Si es detallada, desarrolla solo lo necesario sin cortar.`;
 
@@ -1150,12 +1184,6 @@ REGLAS DE ORO INQUEBRANTABLES:
         contextoConversacion += `\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad. Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Si preguntan por algo "de hoy", "ayer", "actual" o "quién ganó", usa esta referencia temporal y prioriza búsqueda web.`;
 
         const requiereNvidia = detectarTemaMatematico(mensajeLimpio) || !!documentContextTexto;
-        const requiereGoogle = (
-            !documentContextTexto && (
-                detectarNecesitaGoogle(mensajeLimpio, ajusteAlgoritmo) ||
-                esConsultaDeActualidad(mensajeLimpio)
-            )
-        ) || (!!busquedaProfunda && !documentContextTexto);
 
         const esCreativeTask = esTareaCreativa(mensajeLimpio);
         const usarGeminiVisual = !!archivoBase64 && !documentContextTexto;
@@ -1420,17 +1448,17 @@ REGLAS DE ORO INQUEBRANTABLES:
     } catch (error) {
         console.error('Error Núcleo:', error);
         const fallback = respuestaLocalEmergencia({
-            mensajeLimpio: '',
-            modoAplicado: 'politico',
-            documentContextTexto: ''
+            mensajeLimpio,
+            modoAplicado,
+            documentContextTexto
         });
 
         return res.json({
             respuesta: fallback,
             tituloNuevo,
-            modoAplicado: 'politico',
-            complejidadAplicada: 'auto',
-            requiereGoogle: false,
+            modoAplicado,
+            complejidadAplicada: complejidadFinal,
+            requiereGoogle,
             motor: 'fallback-local',
             alerta: { activada: false },
             errorTecnico: true
@@ -1439,7 +1467,7 @@ REGLAS DE ORO INQUEBRANTABLES:
 });
 
 // ======================================================================
-// FEEDBACK HUMANO (LIKES / DISLIKES / MOTIVO / CORRECCIÓN)
+// FEEDBACK HUMANO (LIKES / DISLIKES / MOTIVO / CORRECCION)
 // ======================================================================
 app.post('/api/feedback', async (req, res) => {
     try {
@@ -1452,25 +1480,42 @@ app.post('/api/feedback', async (req, res) => {
             userMeta,
             perfilAcademico,
             modoAplicado,
-            algoritmo
+            algoritmo,
+            chatId,
+            messageId,
+            motor,
+            complejidad,
+            requiereGoogle,
+            origen,
+            host,
+            estadoPrevio
         } = req.body || {};
 
         const guardado = await guardarFeedback({
-            tipo: tipo || 'sin_tipo',
-            motivo: motivo || '',
-            correccion: correccion || '',
-            mensajeUsuario: mensajeUsuario || '',
-            respuestaIA: respuestaIA || '',
-            nombre: userMeta?.nombre || userMeta?.displayName || '',
-            email: userMeta?.email || '',
+            tipo: limpiarTexto(tipo) || 'sin_tipo',
+            motivo: limpiarTexto(motivo),
+            correccion: limpiarTexto(correccion),
+            mensajeUsuario: limpiarTexto(mensajeUsuario),
+            respuestaIA: limpiarTexto(respuestaIA),
+            nombre: limpiarTexto(userMeta?.nombre || userMeta?.displayName || ''),
+            email: limpiarTexto(userMeta?.email || ''),
             perfil: construirEtiquetaPerfil(perfilAcademico),
-            modoAplicado: modoAplicado || '',
-            algoritmo: algoritmo || ''
+            modoAplicado: limpiarTexto(modoAplicado),
+            algoritmo: limpiarTexto(algoritmo),
+            chatId: limpiarTexto(chatId),
+            messageId: limpiarTexto(messageId),
+            motor: limpiarTexto(motor),
+            complejidad: limpiarTexto(complejidad),
+            requiereGoogle: !!requiereGoogle,
+            origen: limpiarTexto(origen),
+            host: limpiarTexto(host),
+            estadoPrevio: limpiarTexto(estadoPrevio)
         });
 
         return res.json({
             ok: true,
-            guardado
+            guardado,
+            almacenamiento: guardado ? 'firestore' : 'local'
         });
     } catch (error) {
         console.error('Error feedback:', error);
@@ -1493,8 +1538,24 @@ app.get('/api/admin/resumen', async (req, res) => {
 
         if (!firestoreAdmin) {
             return res.json({
-                ok: false,
-                mensaje: 'Firebase Admin no configurado en el servidor.'
+                ok: true,
+                estado: 'Local',
+                mensaje: 'Firebase Admin no configurado. Mostrando actividad reciente en memoria.',
+                dependencias: {
+                    firebaseAdmin: false,
+                    nodemailer: !!mailTransporter
+                },
+                kpis: {
+                    alertas: ALERTAS_RECIENTES.length,
+                    feedback: FEEDBACK_RECIENTE.length,
+                    chats: 0
+                },
+                logs: [
+                    ...ALERTAS_RECIENTES.slice(0, 6).map((a) => ({ titulo: 'Alerta', detalle: `${a.categoria || 'general'} · ${(a.nombre || a.email || 'Sin nombre')} · ${(a.mensaje || '').slice(0, 120)}` })),
+                    ...FEEDBACK_RECIENTE.slice(0, 6).map((f) => ({ titulo: 'Feedback', detalle: `${f.tipo || 'sin tipo'} · ${f.motivo || 'sin motivo'}` }))
+                ],
+                alertas: ALERTAS_RECIENTES,
+                feedback: FEEDBACK_RECIENTE
             });
         }
 
@@ -1516,6 +1577,10 @@ app.get('/api/admin/resumen', async (req, res) => {
         return res.json({
             ok: true,
             estado: 'Online',
+            dependencias: {
+                firebaseAdmin: true,
+                nodemailer: !!mailTransporter
+            },
             kpis: {
                 alertas: alertas.length,
                 feedback: feedback.length,
@@ -1537,6 +1602,29 @@ app.get('/api/admin/resumen', async (req, res) => {
     }
 });
 
+app.get('/api/health', (req, res) => {
+    return res.json({
+        ok: true,
+        estado: 'online',
+        uptimeSegundos: Math.round(process.uptime()),
+        puerto: PUERTO,
+        dependencias: {
+            firebaseAdminInstalado: !!admin,
+            firebaseAdminConfigurado: !!firestoreAdmin,
+            nodemailerInstalado: !!nodemailer,
+            nodemailerConfigurado: !!mailTransporter
+        },
+        motores: {
+            nvidiaConfigurados: MODELOS_NVIDIA.filter((m) => !!m.key).length,
+            geminiConfigurados: LLAVES_GEMINI.length
+        },
+        actividadLocal: {
+            alertas: ALERTAS_RECIENTES.length,
+            feedback: FEEDBACK_RECIENTE.length
+        }
+    });
+});
+
 app.listen(PUERTO, () => {
-    console.log(`🦅 FÉNIX OPERATIVO EN PUERTO ${PUERTO}`);
+    console.log(`FÉNIX OPERATIVO EN PUERTO ${PUERTO}`);
 });

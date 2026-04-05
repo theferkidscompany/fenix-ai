@@ -230,6 +230,7 @@ function crearClaveCache(datos) {
         datos?.algoritmo || '',
         datos?.perfil || '',
         datos?.complejidad || '',
+        datos?.personalizacion || '',
         datos?.archivo ? 'archivo' : 'texto',
         datos?.documentContext ? 'docctx' : ''
     ];
@@ -689,12 +690,15 @@ async function guardarFeedback(datos) {
     }
 }
 
-function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado) {
+function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado, opciones = {}) {
     let texto = (textoIA || '').trim();
     if (!texto) return texto;
 
     const quiereBreve = detectarPeticionCorta(mensajeLimpio) || ajusteAlgoritmo === 'breve';
     const creativo = modoAplicado === 'creativo' || esTareaCreativa(mensajeLimpio);
+    const detallado = opciones?.complejidadAplicada === 'detallada';
+    const tieneDocumentoContexto = !!opciones?.tieneDocumentoContexto;
+    const pareceEnumeracionIncompleta = (base) => /(?:^|\n)\s*(?:[-*•]|\d+\.)\s*$/.test(base || '') || /\b\d+\.\s*$/.test(base || '');
 
     texto = normalizarTextoTecnico(texto)
         .replace(/\n{3,}/g, '\n\n')
@@ -725,11 +729,11 @@ function postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoApli
 
     if (quiereBreve) {
         texto = tomarHastaPuntuacion(texto, 95);
-    } else if (!creativo && contarPalabras(texto) > 260) {
+    } else if (!creativo && !detallado && !tieneDocumentoContexto && contarPalabras(texto) > 260) {
         texto = tomarHastaPuntuacion(texto, 200);
     }
 
-    if (!/[.!?:]$/.test(texto) && contarPalabras(texto) > 12) {
+    if (!/[.!?:]$/.test(texto) && !detallado && !tieneDocumentoContexto && !pareceEnumeracionIncompleta(texto) && contarPalabras(texto) > 12) {
         const idx = Math.max(
             texto.lastIndexOf('.'),
             texto.lastIndexOf('!'),
@@ -897,11 +901,212 @@ function esSeguimientoDeDocumento(mensajeLimpio) {
     ]);
 }
 
-function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, modoAplicado, esCreativeTask, complejidadAplicada }) {
+function normalizarMemoriaPersonal(memoriaPersonal) {
+    return (Array.isArray(memoriaPersonal) ? memoriaPersonal : [])
+        .map((item) => {
+            if (typeof item === 'string') return limpiarTexto(item);
+            return limpiarTexto(item?.texto || item?.contenido || item?.valor || '');
+        })
+        .filter(Boolean)
+        .slice(0, 10);
+}
+
+function construirBloquePersonalizacion(preferenciasUsuario, memoriaPersonal) {
+    const lineas = [];
+    const prefs = preferenciasUsuario || {};
+
+    if (prefs.ciudad) lineas.push(`UbicaciÃ³n general: ${limpiarTexto(prefs.ciudad)}`);
+    if (prefs.intereses) lineas.push(`Intereses, fortalezas o temas frecuentes: ${limpiarTexto(prefs.intereses)}`);
+    if (prefs.estilo) lineas.push(`Estilo preferido de respuesta: ${limpiarTexto(prefs.estilo)}`);
+    if (prefs.modoPreferido) lineas.push(`Modo preferido cuando no haya suficiente contexto: ${limpiarTexto(prefs.modoPreferido)}`);
+    if (prefs.bilingualTouch === false) lineas.push('Evita inglÃ©s salvo que el usuario lo pida o sea realmente Ãºtil.');
+    if (prefs.bilingualTouch === true) lineas.push('Puedes usar un toque mÃ­nimo de inglÃ©s si encaja natural.');
+
+    const memorias = normalizarMemoriaPersonal(memoriaPersonal);
+    if (memorias.length > 0) {
+        lineas.push('MEMORIA PERSONAL PERSISTENTE DEL USUARIO:');
+        memorias.forEach((dato, idx) => {
+            lineas.push(`${idx + 1}. ${dato}`);
+        });
+        lineas.push('Usa esta memoria solo cuando ayude. Si preguntan quÃ© recuerdas del usuario, menciona solo lo que estÃ© aquÃ­ o en el chat actual. No inventes rasgos.');
+    }
+
+    return lineas.length > 0 ? `\nPERSONALIZACIÃ“N DEL USUARIO:\n${lineas.join('\n')}` : '';
+}
+
+function construirPromptExtraccionVisual(mimeType) {
+    const esImagen = /^image\//i.test(mimeType || '');
+
+    if (esImagen) {
+        return [
+            'Analiza la imagen con fidelidad mÃ¡xima.',
+            'No la resuelvas ni la interpretes todavÃ­a.',
+            'Si es captura de chat o red social, transcribe todos los mensajes, replies, nombres, horas, emojis, stickers y textos visibles en orden exacto.',
+            'Si es una hoja, ejercicio o diagrama, transcribe el enunciado completo y describe tambiÃ©n todas las pistas visuales importantes: figuras, flechas, etiquetas, letras, marcas de igualdad, Ã¡ngulos, posiciones y relaciones geomÃ©tricas.',
+            'Devuelve SOLO este formato:',
+            '[TRANSCRIPCION COMPLETA]',
+            '...',
+            '[CONTEXTO VISUAL RELEVANTE]',
+            '...',
+            '[PARTES DUDOSAS O ILEGIBLES]',
+            '...',
+            'No resumas. No cortes contenido. Si algo no se lee, dilo explÃ­citamente.'
+        ].join(' ');
+    }
+
+    return [
+        'Extrae TODO el texto visible del archivo y cualquier estructura visual importante.',
+        'Conserva orden, numeraciÃ³n, opciones, tÃ­tulos, sÃ­mbolos, fÃ³rmulas y secciones.',
+        'Si hay varias preguntas o ejercicios, sepÃ¡ralos claramente y no omitas ninguna parte.',
+        'Devuelve texto limpio y completo, sin resolverlo todavÃ­a.'
+    ].join(' ');
+}
+
+function construirPromptVisionDirecta({ mensajeSeguro, fechaHoraPeru, documentContextTexto }) {
+    const contextoDocumento = documentContextTexto
+        ? `\nContexto visual ya extraÃ­do del archivo:\n${documentContextTexto.slice(0, 6000)}\n`
+        : '';
+
+    return [
+        'Usa la imagen o archivo visual adjunto como fuente principal.',
+        'Responde la solicitud actual sin inventar detalles que no se vean.',
+        'Si el usuario pide transcribir, transcribe todo en orden y sin interpretar.',
+        'Si pide analizar tono, seÃ±ales o intenciÃ³n, bÃ¡sate solo en lo visible.',
+        'Si pide resolver un ejercicio, usa tambiÃ©n la informaciÃ³n visual del diagrama o captura, no solo el texto.',
+        'Si el usuario pide una cantidad concreta de puntos, seÃ±ales o pasos, entrega exactamente esa cantidad completa.',
+        'Si hay algo ambiguo o borroso, dilo con honestidad.',
+        `Fecha y hora actual de referencia en PerÃº: ${fechaHoraPeru}.`,
+        contextoDocumento,
+        `Solicitud actual del estudiante: ${mensajeSeguro}`
+    ].join('\n');
+}
+
+function extraerFuentesGrounding(groundingMetadata) {
+    const chunks = Array.isArray(groundingMetadata?.groundingChunks)
+        ? groundingMetadata.groundingChunks
+        : Array.isArray(groundingMetadata?.grounding_chunks)
+            ? groundingMetadata.grounding_chunks
+            : [];
+
+    const fuentes = chunks.map((chunk) => {
+        const web = chunk?.web || chunk?.retrievedContext || chunk;
+        const uri = limpiarTexto(web?.uri || web?.url || '');
+        const titulo = limpiarTexto(web?.title || web?.titulo || '');
+        return uri ? { titulo, uri } : null;
+    }).filter(Boolean);
+
+    return fuentes.filter((fuente, index, arr) => arr.findIndex((item) => item.uri === fuente.uri) === index).slice(0, 5);
+}
+
+function construirBloquePersonalizacionLimpio(preferenciasUsuario, memoriaPersonal) {
+    const lineas = [];
+    const prefs = preferenciasUsuario || {};
+
+    if (prefs.ciudad) lineas.push(`Ubicacion general: ${limpiarTexto(prefs.ciudad)}`);
+    if (prefs.intereses) lineas.push(`Intereses, fortalezas o temas frecuentes: ${limpiarTexto(prefs.intereses)}`);
+    if (prefs.estilo) lineas.push(`Estilo preferido de respuesta: ${limpiarTexto(prefs.estilo)}`);
+    if (prefs.modoPreferido) lineas.push(`Modo preferido cuando no haya suficiente contexto: ${limpiarTexto(prefs.modoPreferido)}`);
+    if (prefs.bilingualTouch === false) lineas.push('Evita ingles salvo que el usuario lo pida o sea realmente util.');
+    if (prefs.bilingualTouch === true) lineas.push('Puedes usar un toque minimo de ingles si encaja natural.');
+
+    const memorias = normalizarMemoriaPersonal(memoriaPersonal);
+    if (memorias.length > 0) {
+        lineas.push('MEMORIA PERSONAL PERSISTENTE DEL USUARIO:');
+        memorias.forEach((dato, idx) => {
+            lineas.push(`${idx + 1}. ${dato}`);
+        });
+        lineas.push('Usa esta memoria solo cuando ayude. Si preguntan que recuerdas del usuario, menciona solo lo que este aqui o en el chat actual. No inventes rasgos.');
+    }
+
+    return lineas.length > 0 ? `\nPERSONALIZACION DEL USUARIO:\n${lineas.join('\n')}` : '';
+}
+
+function construirPromptExtraccionVisualLimpio(mimeType) {
+    const esImagen = /^image\//i.test(mimeType || '');
+
+    if (esImagen) {
+        return [
+            'Analiza la imagen con fidelidad maxima.',
+            'No la resuelvas ni la interpretes todavia.',
+            'Si es captura de chat o red social, transcribe todos los mensajes, replies, nombres, horas, emojis, stickers y textos visibles en orden exacto.',
+            'Si es una hoja, ejercicio o diagrama, transcribe el enunciado completo y describe tambien todas las pistas visuales importantes: figuras, flechas, etiquetas, letras, marcas de igualdad, angulos, posiciones y relaciones geometricas.',
+            'Devuelve SOLO este formato:',
+            '[TRANSCRIPCION COMPLETA]',
+            '...',
+            '[CONTEXTO VISUAL RELEVANTE]',
+            '...',
+            '[PARTES DUDOSAS O ILEGIBLES]',
+            '...',
+            'No resumas. No cortes contenido. Si algo no se lee, dilo explicitamente.'
+        ].join(' ');
+    }
+
+    return [
+        'Extrae TODO el texto visible del archivo y cualquier estructura visual importante.',
+        'Conserva orden, numeracion, opciones, titulos, simbolos, formulas y secciones.',
+        'Si hay varias preguntas o ejercicios, separalos claramente y no omitas ninguna parte.',
+        'Devuelve texto limpio y completo, sin resolverlo todavia.'
+    ].join(' ');
+}
+
+function construirPromptVisionDirectaLimpio({ mensajeSeguro, fechaHoraPeru, documentContextTexto }) {
+    const contextoDocumento = documentContextTexto
+        ? `\nContexto visual ya extraido del archivo:\n${documentContextTexto.slice(0, 6000)}\n`
+        : '';
+
+    return [
+        'Usa la imagen o archivo visual adjunto como fuente principal.',
+        'Responde la solicitud actual sin inventar detalles que no se vean.',
+        'Si el usuario pide transcribir, transcribe todo en orden y sin interpretar.',
+        'Si pide analizar tono, senales o intencion, basate solo en lo visible.',
+        'Si pide resolver un ejercicio, usa tambien la informacion visual del diagrama o captura, no solo el texto.',
+        'Si el usuario pide una cantidad concreta de puntos, senales o pasos, entrega exactamente esa cantidad completa.',
+        'Si hay algo ambiguo o borroso, dilo con honestidad.',
+        `Fecha y hora actual de referencia en Peru: ${fechaHoraPeru}.`,
+        contextoDocumento,
+        `Solicitud actual del estudiante: ${mensajeSeguro}`
+    ].join('\n');
+}
+
+function asegurarRespuestaWebLimpia(textoIA, fueVerificada, fechaHoraPeru) {
+    if (!fueVerificada) {
+        return `Verificacion web: no. No pude comprobarlo con evidencia web confiable al ${fechaHoraPeru}, asi que prefiero no inventarte un dato actual.`;
+    }
+
+    const limpio = (textoIA || '').trim();
+    if (!limpio) {
+        return `Verificacion web: si. Revisado al ${fechaHoraPeru}.`;
+    }
+
+    if (/^verificacion web:/i.test(limpio)) {
+        return limpio;
+    }
+
+    return `Verificacion web: si. Revisado al ${fechaHoraPeru}.\n\n${limpio}`;
+}
+
+function asegurarRespuestaWeb(textoIA, fueVerificada, fechaHoraPeru) {
+    if (!fueVerificada) {
+        return `VerificaciÃ³n web: no. No pude comprobarlo con evidencia web confiable al ${fechaHoraPeru}, asÃ­ que prefiero no inventarte un dato actual.`;
+    }
+
+    const limpio = (textoIA || '').trim();
+    if (!limpio) {
+        return `VerificaciÃ³n web: sÃ­. Revisado al ${fechaHoraPeru}.`;
+    }
+
+    if (/^verificaci[oÃ³]n web:/i.test(limpio)) {
+        return limpio;
+    }
+
+    return `VerificaciÃ³n web: sÃ­. Revisado al ${fechaHoraPeru}.\n\n${limpio}`;
+}
+
+function obtenerMaxTokensSalida({ archivoBase64, tieneDocumentoContexto, peticionCorta, detallado, modoAplicado, esCreativeTask, complejidadAplicada }) {
     const simple = peticionCorta || complejidadAplicada === 'simple';
     const detalladoFinal = detallado || complejidadAplicada === 'detallada';
 
-    if (archivoBase64) return detalladoFinal ? 1300 : (simple ? 700 : 950);
+    if (archivoBase64 || tieneDocumentoContexto) return detalladoFinal ? 1800 : (simple ? 900 : 1400);
     if (simple) return esCreativeTask ? 420 : 260;
     if (esCreativeTask || modoAplicado === 'creativo') return detalladoFinal ? 1200 : 800;
     if (modoAplicado === 'estudio') return detalladoFinal ? 1100 : 720;
@@ -995,6 +1200,7 @@ function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetal
         base.push('Si piden el plan de gobierno sin pedir detalle, da 5 ejes con 1 idea principal por eje.');
     }
 
+    base.push('Si el usuario pide una cantidad concreta de puntos, senales o pasos, entrega exactamente esa cantidad y no dejes listas a medias.');
     return base.join(' ');
 }
 
@@ -1033,7 +1239,8 @@ app.post('/api/chat', async (req, res) => {
             busquedaProfunda,
             modoManual,
             complejidad,
-            documentContext
+            documentContext,
+            memoriaPersonal
         } = req.body;
 
         const mensajeSeguro = limpiarTexto(mensaje);
@@ -1129,6 +1336,8 @@ REGLAS DE ORO INQUEBRANTABLES:
             promptDinamico += `\nMEMORIA ACTIVA: NORMAL. Usa el historial reciente solo cuando mejore claridad y coherencia.`;
         }
 
+        promptDinamico += construirBloquePersonalizacionLimpio(preferenciasUsuario, memoriaPersonal);
+
         const perfilTexto = construirEtiquetaPerfil(perfilAcademico);
         const complejidadAplicada = detectarComplejidadAutomatica(mensajeLimpio);
         const complejidadSolicitada = typeof complejidad === 'string' && ['auto','simple','normal','detallada'].includes(complejidad) ? complejidad : 'auto';
@@ -1183,10 +1392,9 @@ REGLAS DE ORO INQUEBRANTABLES:
         const fechaHoraPeru = obtenerFechaHoraPeru();
         contextoConversacion += `\nINSTRUCCIÓN FINAL: Markdown solo cuando ayude. Responde claro, corto y útil por defecto. Nunca cortes la respuesta a la mitad. Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Si preguntan por algo "de hoy", "ayer", "actual" o "quién ganó", usa esta referencia temporal y prioriza búsqueda web.`;
 
-        const requiereNvidia = detectarTemaMatematico(mensajeLimpio) || !!documentContextTexto;
-
         const esCreativeTask = esTareaCreativa(mensajeLimpio);
-        const usarGeminiVisual = !!archivoBase64 && !documentContextTexto;
+        const esArchivoVisual = !!archivoBase64 && /^(image\/|application\/pdf)/i.test(mimeType || '');
+        const usarGeminiVisual = esArchivoVisual && !requiereGoogle;
         const usarGeminiBusqueda = !documentContextTexto && requiereGoogle;
 
         let textoIA = '';
@@ -1196,6 +1404,7 @@ REGLAS DE ORO INQUEBRANTABLES:
         let ultimoErrorNvidia = null;
         let ultimoErrorGemini = null;
         let seUsoOCR = false;
+        let webBusquedaVerificada = false;
 
         const cacheKey = crearClaveCache({
             mensaje: mensajeSeguro,
@@ -1203,6 +1412,12 @@ REGLAS DE ORO INQUEBRANTABLES:
             algoritmo: ajusteAlgoritmo,
             perfil: perfilTexto,
             complejidad: complejidadFinal,
+            personalizacion: [
+                limpiarTexto(userMeta?.email || ''),
+                limpiarTexto(preferenciasUsuario?.ciudad || ''),
+                limpiarTexto(preferenciasUsuario?.intereses || ''),
+                normalizarMemoriaPersonal(memoriaPersonal).join('|')
+            ].join('||'),
             archivo: !!archivoBase64,
             documentContext: !!documentContextTexto,
             requiereGoogle: !!requiereGoogle,
@@ -1232,11 +1447,11 @@ REGLAS DE ORO INQUEBRANTABLES:
                     const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceActual]);
                     const model = genAI.getGenerativeModel({
                         model: 'gemini-2.5-flash',
-                        generationConfig: { maxOutputTokens: 900, temperature: 0.1 }
+                        generationConfig: { maxOutputTokens: 1800, temperature: 0.1 }
                     });
                     const partes = [
                         {
-                            text: 'Extrae TODO el texto visible o el enunciado del archivo. Conserva el orden, numeración, opciones, títulos, letras, símbolos, fórmulas y datos importantes. Si hay varias preguntas o ejercicios, sepáralos claramente por secciones o viñetas y no omitas ninguna parte. No lo resuelvas todavía. Devuelve texto limpio, continuo, escolar y completo, sin resumir de más ni cortar contenido. Si hay fórmulas, exprésalas en formato simple, sin LaTeX crudo.'
+                            text: construirPromptExtraccionVisualLimpio(mimeType)
                         },
                         {
                             inlineData: {
@@ -1289,10 +1504,12 @@ REGLAS DE ORO INQUEBRANTABLES:
                         generationConfig: {
                             maxOutputTokens: obtenerMaxTokensSalida({
                                 archivoBase64: null,
+                                tieneDocumentoContexto: false,
                                 peticionCorta,
                                 detallado: peticionDetallada,
                                 modoAplicado,
-                                esCreativeTask
+                                esCreativeTask,
+                                complejidadAplicada: complejidadFinal
                             }),
                             temperature: ajusteAlgoritmo === 'breve' ? 0.2 : 0.3
                         }
@@ -1303,8 +1520,10 @@ REGLAS DE ORO INQUEBRANTABLES:
                     }
 
                     const model = genAI.getGenerativeModel(modelConfig);
-                    const searchPrompt = `Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Mensaje del estudiante: ${mensajeSeguro}`;
+                    const searchPrompt = `Fecha y hora actual de referencia en Perú: ${fechaHoraPeru}. Si verificas en web, dilo con honestidad y usa fecha absoluta. Si no logras verificar, di claramente "Verificación web: no". Mensaje del estudiante: ${mensajeSeguro}`;
                     const result = await model.generateContent(searchPrompt);
+                    const groundingMetadata = result.response?.candidates?.[0]?.groundingMetadata || result.response?.candidates?.[0]?.grounding_metadata || null;
+                    webBusquedaVerificada = extraerFuentesGrounding(groundingMetadata).length > 0 || !!groundingMetadata?.searchEntryPoint || !!groundingMetadata?.search_entry_point;
                     textoIA = result.response.text();
                     motorUsado = 'gemini:search';
                     geminiTuvoExito = true;
@@ -1326,7 +1545,77 @@ REGLAS DE ORO INQUEBRANTABLES:
             }
         }
 
-        if (!geminiTuvoExito) {
+        if (requiereGoogle && !geminiTuvoExito) {
+            textoIA = asegurarRespuestaWebLimpia('', false, fechaHoraPeru);
+            motorUsado = 'web-no-verificada';
+        }
+
+        if (!textoIA && usarGeminiVisual && LLAVES_GEMINI.length > 0) {
+            let intentoVisual = 0;
+            while (intentoVisual < LLAVES_GEMINI.length) {
+                const indiceActual = (indiceLlaveGemini + intentoVisual) % LLAVES_GEMINI.length;
+                if (!llaveGeminiDisponible(indiceActual)) {
+                    intentoVisual++;
+                    continue;
+                }
+
+                try {
+                    const genAI = new GoogleGenerativeAI(LLAVES_GEMINI[indiceActual]);
+                    const model = genAI.getGenerativeModel({
+                        model: 'gemini-2.5-flash',
+                        systemInstruction: contextoConversacion,
+                        generationConfig: {
+                            maxOutputTokens: obtenerMaxTokensSalida({
+                                archivoBase64,
+                                tieneDocumentoContexto: !!documentContextTexto,
+                                peticionCorta,
+                                detallado: peticionDetallada,
+                                modoAplicado,
+                                esCreativeTask,
+                                complejidadAplicada: complejidadFinal
+                            }),
+                            temperature: modoAplicado === 'creativo' ? 0.45 : 0.2
+                        }
+                    });
+
+                    const result = await model.generateContent([
+                        {
+                            text: construirPromptVisionDirectaLimpio({
+                                mensajeSeguro,
+                                fechaHoraPeru,
+                                documentContextTexto
+                            })
+                        },
+                        {
+                            inlineData: {
+                                data: archivoBase64.split(',')[1],
+                                mimeType: mimeType
+                            }
+                        }
+                    ]);
+
+                    textoIA = result.response.text();
+                    geminiTuvoExito = true;
+                    indiceLlaveGemini = (indiceActual + 1) % Math.max(LLAVES_GEMINI.length, 1);
+                    motorUsado = seUsoOCR ? 'gemini:vision+contexto' : 'gemini:vision';
+                    break;
+                } catch (errorGemini) {
+                    ultimoErrorGemini = errorGemini;
+                    const textoError = (errorGemini?.message || errorGemini || '').toString();
+                    const retryMs = extraerRetryMs(errorGemini);
+                    if (/429|quota exceeded|too many requests/i.test(textoError)) {
+                        if (esCuotaDiariaGemini(errorGemini)) {
+                            bloquearLlaveGemini(indiceActual, msHastaMedianochePeru(), 'cuota diaria');
+                        } else {
+                            bloquearLlaveGemini(indiceActual, Math.max(retryMs, 20 * 60 * 1000), 'cuota temporal');
+                        }
+                    }
+                    intentoVisual++;
+                }
+            }
+        }
+
+        if (!geminiTuvoExito && !textoIA) {
             const modelosOrdenados = seleccionarModelosNvidia(modoAplicado, mensajeLimpio);
             const instruccionExtra = construirInstruccionNvidia({
                 modoAplicado,
@@ -1383,6 +1672,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                                             : 0.35,
                                 max_tokens: obtenerMaxTokensSalida({
                                     archivoBase64,
+                                    tieneDocumentoContexto: !!documentContextTexto,
                                     peticionCorta,
                                     detallado: peticionDetallada,
                                     modoAplicado,
@@ -1425,7 +1715,14 @@ REGLAS DE ORO INQUEBRANTABLES:
             throw new Error(`No hubo respuesta útil de NVIDIA. ${detalle}`);
         }
 
-        textoIA = postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado);
+        if (requiereGoogle) {
+            textoIA = asegurarRespuestaWebLimpia(textoIA, webBusquedaVerificada, fechaHoraPeru);
+        }
+
+        textoIA = postProcesarRespuesta(textoIA, mensajeLimpio, ajusteAlgoritmo, modoAplicado, {
+            complejidadAplicada: complejidadFinal,
+            tieneDocumentoContexto: !!documentContextTexto
+        });
 
         const respuestaPayload = {
             respuesta: textoIA,

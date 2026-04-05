@@ -155,6 +155,27 @@ function contarPalabras(texto) {
     return limpiarTexto(texto).split(' ').filter(Boolean).length;
 }
 
+function detectarComplejidadAutomatica(mensajeLimpio) {
+    const base = quitarTildes((mensajeLimpio || '').toLowerCase());
+    const palabras = contarPalabras(base);
+
+    if (textoIncluyeAlguno(base, ['solo la clave', 'solo clave', 'solo respuesta', 'solo resultado', 'breve', 'corto', 'resumido', 'simple', 'al grano', 'una frase', '30 palabras'])) {
+        return 'simple';
+    }
+
+    if (textoIncluyeAlguno(base, ['detall', 'desarrolla', 'eje por eje', 'discurso', 'guion', 'clase completa', 'analiza', 'explica completo', 'paso a paso'])) {
+        return 'detallada';
+    }
+
+    if (palabras <= 8) return 'simple';
+    if (palabras <= 22) return 'normal';
+    return 'detallada';
+}
+
+function obtenerEtiquetaComplejidad(valor) {
+    return COMPLEJIDAD_META[valor] || COMPLEJIDAD_META.normal;
+}
+
 function llaveGeminiDisponible(indice) {
     const estado = ESTADO_LLAVES_GEMINI[indice];
     return !estado || !estado.bloqueadaHasta || Date.now() > estado.bloqueadaHasta;
@@ -193,6 +214,7 @@ function crearClaveCache(datos) {
         datos?.modoAplicado || '',
         datos?.algoritmo || '',
         datos?.perfil || '',
+        datos?.complejidad || '',
         datos?.archivo ? 'archivo' : 'texto',
         datos?.documentContext ? 'docctx' : ''
     ];
@@ -223,6 +245,15 @@ function obtenerFechaHoraPeru() {
         dateStyle: 'full',
         timeStyle: 'short'
     }).format(ahora);
+}
+
+function normalizarDocumentoExtraido(texto) {
+    return normalizarTextoTecnico((texto || '')
+        .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n'))
+        .trim();
 }
 
 function necesitaMemoriaCompleta(mensajeLimpio) {
@@ -544,6 +575,28 @@ function detectarRiesgoPsicosocial(mensaje) {
     return { activar: false, categoria: null };
 }
 
+function respuestaLocalEmergencia({ mensajeLimpio, modoAplicado, documentContextTexto }) {
+    if (textoIncluyeAlguno(mensajeLimpio, ['hola', 'hi', 'hello', 'saludos', 'buenas'])) {
+        return 'Hola, capitán. Soy Fénix y estoy listo para ayudarte.';
+    }
+    if (textoIncluyeAlguno(mensajeLimpio, ['quien eres', 'quién eres'])) {
+        return 'Soy Fénix, la IA oficial de Revolution JPII. Estoy para ayudar, explicar y orientar.';
+    }
+    if (textoIncluyeAlguno(mensajeLimpio, ['plan de gobierno'])) {
+        return 'Nuestro plan se organiza en 5 ejes: Educación/Cultura/Deporte, Comunicación/Tecnología, Emprendimiento, Salud/Medio Ambiente y Derechos del Niño. Si quieres, puedo desarrollarlo más.';
+    }
+    if (textoIncluyeAlguno(mensajeLimpio, ['5x+15=40', 'ecuacion', 'ecuación'])) {
+        return 'Parece un ejercicio matemático. Intenta reenviarlo o escribirlo en texto para resolverlo con precisión.';
+    }
+    if (documentContextTexto) {
+        return 'Leí el documento, pero el motor principal no respondió con suficiente claridad. Reintenta y lo vuelvo a procesar.';
+    }
+    if (modoAplicado === 'estudio') {
+        return 'Estoy teniendo un problema temporal con el motor principal. Reintenta y lo resuelvo en modo estudio.';
+    }
+    return 'Estoy teniendo un problema temporal con el motor principal. Reintenta en unos segundos.';
+}
+
 function construirRespuestaSeguraAlerta(categoria) {
     if (categoria === 'bullying') {
         return 'Capitán, eso suena serio. You are not alone. Si esto está pasando de verdad, busca ahora mismo a un adulto de confianza, tutoría o psicología del colegio. Voy a marcar este caso como alerta para que reciba atención. ¿Estás en un lugar seguro ahora?';
@@ -822,13 +875,16 @@ function esSeguimientoDeDocumento(mensajeLimpio) {
     ]);
 }
 
-function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, modoAplicado, esCreativeTask }) {
-    if (archivoBase64) return 900;
-    if (peticionCorta) return esCreativeTask ? 420 : 300;
-    if (esCreativeTask || modoAplicado === 'creativo') return detallado ? 1200 : 800;
-    if (modoAplicado === 'estudio') return detallado ? 1000 : 700;
-    if (modoAplicado === 'analitico') return detallado ? 900 : 620;
-    return detallado ? 900 : 520;
+function obtenerMaxTokensSalida({ archivoBase64, peticionCorta, detallado, modoAplicado, esCreativeTask, complejidadAplicada }) {
+    const simple = peticionCorta || complejidadAplicada === 'simple';
+    const detalladoFinal = detallado || complejidadAplicada === 'detallada';
+
+    if (archivoBase64) return detalladoFinal ? 1300 : (simple ? 700 : 950);
+    if (simple) return esCreativeTask ? 420 : 260;
+    if (esCreativeTask || modoAplicado === 'creativo') return detalladoFinal ? 1200 : 800;
+    if (modoAplicado === 'estudio') return detalladoFinal ? 1100 : 720;
+    if (modoAplicado === 'analitico') return detalladoFinal ? 950 : 620;
+    return detalladoFinal ? 980 : 520;
 }
 
 function esTareaCreativa(mensajeLimpio) {
@@ -880,19 +936,24 @@ function seleccionarModelosNvidia(modoAplicado, mensajeLimpio) {
     return [llama, deepseek, qwen].filter(Boolean);
 }
 
-function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetallada, esCreativeTask, mensajeLimpio }) {
+function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetallada, esCreativeTask, mensajeLimpio, complejidadAplicada }) {
     const base = [];
     base.push('Responde en español claro, humano, divertido y útil.');
     base.push('Habla como una persona real: cálida, friendly y segura, no como un informe frío.');
     base.push('Usa un toque muy breve de inglés solo si encaja natural, como good point, nice move, future o teamwork.');
+    base.push('No hables como robot: responde humano, cálido y fácil de entender.');
     base.push('No cortes la respuesta a la mitad.');
     base.push('No inventes datos externos ni resultados en tiempo real.');
     base.push('Si el usuario pide algo actual y no hay verificación web, dilo con honestidad.');
     base.push('Si el mensaje trata de noticias, hoy, ayer o resultados actuales, espera la ruta de verificación web.');
     base.push('Cuando el usuario pida un cuento, historia, exposición o clase, termina el texto completo con cierre claro.');
     base.push('No suenes como IA fría; suena cercano, humano y con un poquito de energía.');
+    base.push('Si haces matemáticas, escribe en texto limpio y simple; usa LaTeX solo si el usuario lo pide explícitamente.');
 
-    if (peticionCorta) base.push('El usuario pidió brevedad: ve al grano, sin relleno.');
+    if (peticionCorta || complejidadAplicada === 'simple') base.push('El usuario pidió brevedad: ve al grano, sin relleno.');
+
+    if (complejidadAplicada === 'simple') base.push('Responde en 2 a 4 líneas máximo si es posible.');
+    if (complejidadAplicada === 'detallada') base.push('Desarrolla con orden, claridad y cierre completo, sin dejar ideas a medias.');
 
     if (modoAplicado === 'estudio') {
         base.push('Actúa como tutor moderno: respuesta corta primero, luego una explicación breve y clara. Casi sin emojis.');
@@ -901,7 +962,7 @@ function construirInstruccionNvidia({ modoAplicado, peticionCorta, peticionDetal
     } else if (modoAplicado === 'creativo') {
         base.push('Sé imaginativo, cálido y memorable. Puedes usar hasta 2 emojis si ayudan.');
     } else {
-        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural. Usa como máximo 1 emoji. Si suma al tono, abre con una frase potente y cálida.');
+        base.push('Mantén el gancho de Revolution JPII solo si encaja de forma natural. Usa como máximo 1 emoji en modo político y 0 o 1 en estudio. Si suma al tono, abre con una frase potente y cálida.');
     }
 
     if (esCreativeTask) {
@@ -942,6 +1003,7 @@ app.post('/api/chat', async (req, res) => {
             preferenciasUsuario,
             busquedaProfunda,
             modoManual,
+            complejidad,
             documentContext
         } = req.body;
 
@@ -1040,7 +1102,11 @@ REGLAS DE ORO INQUEBRANTABLES:
         }
 
         const perfilTexto = construirEtiquetaPerfil(perfilAcademico);
+        const complejidadAplicada = detectarComplejidadAutomatica(mensajeLimpio);
+        const complejidadSolicitada = typeof complejidad === 'string' && ['auto','simple','normal','detallada'].includes(complejidad) ? complejidad : 'auto';
+        const complejidadFinal = complejidadSolicitada === 'auto' ? complejidadAplicada : complejidadSolicitada;
         promptDinamico += `\nPERFIL ACADÉMICO DEL USUARIO: ${perfilTexto}. Ajusta dificultad, vocabulario y profundidad a ese nivel.`;
+        promptDinamico += `\nCOMPLEJIDAD APLICADA: ${complejidadFinal}. Si es simple, responde breve y claro. Si es normal, equilibra. Si es detallada, desarrolla solo lo necesario sin cortar.`;
 
         if (ajusteAlgoritmo === 'breve') {
             promptDinamico += `\nAJUSTE DE ALGORITMO: ULTRA BREVE. Prioriza respuestas cortas, claras y de bajo consumo de tokens.`;
@@ -1077,7 +1143,7 @@ REGLAS DE ORO INQUEBRANTABLES:
 
         if (documentContextTexto) {
             contextoConversacion += `\n--- CONTEXTO DEL DOCUMENTO EXTRAÍDO ---\n${documentContextTexto.slice(0, 4000)}\n--------------------------------------\n`;
-            contextoConversacion += `\nINSTRUCCIÓN PARA DOCUMENTOS: Si el archivo trae varios ejercicios, respóndelos en orden. Si el usuario pide "solo la clave", "alternativa", "solo resultado" o "explicación breve", responde exactamente con ese formato y sin perder ninguna parte importante del documento.`;
+            contextoConversacion += `\nINSTRUCCIÓN PARA DOCUMENTOS: Si el archivo trae varios ejercicios, respóndelos en orden y no omitas ninguno. Si el usuario pide "solo la clave", "alternativa", "solo resultado", "explicación breve" o "traduce", responde exactamente con ese formato y sin perder ninguna parte importante del documento.`;
         }
 
         const fechaHoraPeru = obtenerFechaHoraPeru();
@@ -1108,6 +1174,7 @@ REGLAS DE ORO INQUEBRANTABLES:
             modoAplicado,
             algoritmo: ajusteAlgoritmo,
             perfil: perfilTexto,
+            complejidad: complejidadFinal,
             archivo: !!archivoBase64,
             documentContext: !!documentContextTexto,
             requiereGoogle: !!requiereGoogle,
@@ -1141,7 +1208,7 @@ REGLAS DE ORO INQUEBRANTABLES:
                     });
                     const partes = [
                         {
-                            text: 'Extrae TODO el texto visible o el enunciado del archivo. Conserva el orden, numeración, opciones, títulos y símbolos útiles. Si hay varias preguntas o ejercicios, sepáralos por secciones o viñetas. No lo resuelvas todavía. Devuelve texto limpio, continuo y escolar. Si hay fórmulas, exprésalas en formato simple, sin LaTeX crudo.'
+                            text: 'Extrae TODO el texto visible o el enunciado del archivo. Conserva el orden, numeración, opciones, títulos, letras, símbolos, fórmulas y datos importantes. Si hay varias preguntas o ejercicios, sepáralos claramente por secciones o viñetas y no omitas ninguna parte. No lo resuelvas todavía. Devuelve texto limpio, continuo, escolar y completo, sin resumir de más ni cortar contenido. Si hay fórmulas, exprésalas en formato simple, sin LaTeX crudo.'
                         },
                         {
                             inlineData: {
@@ -1238,7 +1305,8 @@ REGLAS DE ORO INQUEBRANTABLES:
                 peticionCorta,
                 peticionDetallada,
                 esCreativeTask,
-                mensajeLimpio
+                mensajeLimpio,
+                complejidadAplicada: complejidadFinal
             });
 
             for (let i = 0; i < modelosOrdenados.length; i++) {
@@ -1290,7 +1358,8 @@ REGLAS DE ORO INQUEBRANTABLES:
                                     peticionCorta,
                                     detallado: peticionDetallada,
                                     modoAplicado,
-                                    esCreativeTask
+                                    esCreativeTask,
+                                    complejidadAplicada: complejidadFinal
                                 })
                             })
                         }
@@ -1334,6 +1403,7 @@ REGLAS DE ORO INQUEBRANTABLES:
             respuesta: textoIA,
             tituloNuevo,
             modoAplicado,
+            complejidadAplicada: complejidadFinal,
             requiereGoogle: !!requiereGoogle,
             motor: motorUsado,
             documentContext: documentContextTexto ? { textoExtraido: documentContextTexto, resumen: resumirDocumentoContexto(documentContextTexto) } : null,
@@ -1349,9 +1419,21 @@ REGLAS DE ORO INQUEBRANTABLES:
         return res.json(respuestaPayload);
     } catch (error) {
         console.error('Error Núcleo:', error);
+        const fallback = respuestaLocalEmergencia({
+            mensajeLimpio: '',
+            modoAplicado: 'politico',
+            documentContextTexto: ''
+        });
 
-        return res.status(500).json({
-            error: '¡Uf! Mis circuitos están saturados. 🔌 Dame unos segundos y vuelve a intentarlo.'
+        return res.json({
+            respuesta: fallback,
+            tituloNuevo,
+            modoAplicado: 'politico',
+            complejidadAplicada: 'auto',
+            requiereGoogle: false,
+            motor: 'fallback-local',
+            alerta: { activada: false },
+            errorTecnico: true
         });
     }
 });
